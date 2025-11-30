@@ -32,7 +32,7 @@
                         <button class="accordion-button @(isBeforeOpen ? "" : "collapsed")" type="button" @onclick="() => isBeforeOpen = !isBeforeOpen">
                             <span class="me-auto">Before</span>
                             <InputFile OnChange="LoadFile" @onclick:stopPropagation="true" accept=".json" class="d-none" id="fileInput" />
-                            <button class="btn btn-primary btn-sm me-2" @onclick="TriggerFileInput" @onclick:stopPropagation="true">Load</button>
+                            <button class="btn btn-primary btn-sm me-2" @onclick="TriggerFileInput" @onclick:stopPropagation="true">Load Project</button>
                         </button>
                     </h2>
                     <div class="accordion-collapse collapse @(isBeforeOpen ? "show" : "")">
@@ -182,8 +182,7 @@
         <div class="col-md-6">
             <div class="d-flex align-items-center mb-2">
                 <label class="form-label me-auto mb-0">After</label>
-                <button class="btn btn-success btn-sm me-2" @onclick="SaveProject">Save Project</button>
-                <button class="btn btn-info btn-sm" @onclick="SaveAfterText">Save Text</button>
+                <button class="btn btn-success btn-sm" @onclick="SaveProject">Save Project</button>
             </div>
             <textarea class="form-control" rows="20" value="@afterText" @onchange="@((ChangeEventArgs e) => afterText = e.Value?.ToString() ?? "")" placeholder="Processed text..."></textarea>
         </div>
@@ -432,7 +431,12 @@ Focus on:
                 await OnModelChanged();
             }
 
-            statusText = $"Project loaded successfully! Model: {selectedModel}, Characters: {knownCharacters.Count}, Summaries: {chapterSummaries.Count}";
+            // Open the relevant accordion sections to show loaded data
+            isBeforeOpen = true;
+            isCharactersOpen = knownCharacters.Count > 0;
+            isSummaryOpen = chapterSummaries.Count > 0;
+
+            statusText = $"Project loaded successfully! Model: {selectedModel}, Characters: {knownCharacters.Count}, Summaries: {chapterSummaries.Count}. Click 'Prepare' to regenerate chapter states before applying ruleset.";
             StateHasChanged();
         }
         catch (Exception ex)
@@ -471,28 +475,6 @@ Focus on:
         catch (Exception ex)
         {
             statusText = $"Error saving project: {ex.Message}";
-        }
-    }
-
-    private async Task SaveAfterText()
-    {
-        try
-        {
-            if (string.IsNullOrWhiteSpace(afterText))
-            {
-                statusText = "Error: No text to save.";
-                return;
-            }
-
-            var fileName = $"story-output-{DateTime.Now:yyyy-MM-dd-HHmmss}.txt";
-
-            await JSRuntime.InvokeVoidAsync("downloadFile", fileName, "text/plain", afterText);
-
-            statusText = $"Text saved as {fileName}";
-        }
-        catch (Exception ex)
-        {
-            statusText = $"Error saving text: {ex.Message}";
         }
     }
 

@@ -223,10 +223,10 @@ public class OllamaService
                 Console.WriteLine($"[Pass 1] {statusMsg}");
                 onProgressUpdate?.Invoke(statusMsg, new List<CharacterInfo>(allCharacters), new List<string>());
 
-                // Store state BEFORE this chapter
+                // Create placeholder state - will be populated after Pass 1 completes
                 chapterStates.Add(new ChapterState
                 {
-                    CharactersKnownBeforeThisChapter = new List<CharacterInfo>(allCharacters),
+                    CharactersKnownBeforeThisChapter = new List<CharacterInfo>(),
                     SummariesBeforeThisChapter = new List<string>()  // No summaries yet
                 });
 
@@ -281,6 +281,35 @@ public class OllamaService
             }
 
             Console.WriteLine($"\n[Pass 1] Complete! Total unique characters: {allCharacters.Count}\n");
+
+            // =================================================================
+            // POST-PASS 1: POPULATE CHARACTER LISTS FOR EACH CHAPTER
+            // =================================================================
+            Console.WriteLine("\n--- POST-PASS 1: FILTERING CHARACTERS FOR EACH CHAPTER ---\n");
+
+            for (int i = 0; i < chapterContents.Count; i++)
+            {
+                int currentChapter = i + 1; // Chapters are 1-based
+
+                // Filter characters based on:
+                // 1. IntroducedInChapter <= currentChapter (character must be introduced by now)
+                // 2. LastChangedInChapter is null OR >= currentChapter (character is still "active")
+                var availableCharacters = allCharacters.Where(c =>
+                    c.IntroducedInChapter <= currentChapter &&
+                    (c.LastChangedInChapter == null || c.LastChangedInChapter >= currentChapter)
+                ).ToList();
+
+                chapterStates[i].CharactersKnownBeforeThisChapter = availableCharacters;
+
+                Console.WriteLine($"[Post-Pass 1] Chapter {currentChapter}: {availableCharacters.Count} characters available");
+                foreach (var c in availableCharacters)
+                {
+                    var endInfo = c.LastChangedInChapter.HasValue ? $", ends in ch.{c.LastChangedInChapter}" : "";
+                    Console.WriteLine($"  - {c.Name} (introduced ch.{c.IntroducedInChapter}{endInfo})");
+                }
+            }
+
+            Console.WriteLine($"\n[Post-Pass 1] Complete!\n");
 
             // =================================================================
             // PASS 2: SUMMARIZATION OF RAW CHAPTERS
