@@ -25,14 +25,16 @@
 
     <div class="row mb-3">
         <div class="col-md-6">
+            <!-- Hidden file input outside the accordion -->
+            <InputFile OnChange="LoadFile" accept=".json" style="display: none;" @ref="fileInputRef" id="fileInput" />
+
             <div class="accordion" id="inputAccordion">
                 <!-- Before Section -->
                 <div class="accordion-item">
                     <h2 class="accordion-header">
                         <button class="accordion-button @(isBeforeOpen ? "" : "collapsed")" type="button" @onclick="() => isBeforeOpen = !isBeforeOpen">
                             <span class="me-auto">Before</span>
-                            <InputFile OnChange="LoadFile" @onclick:stopPropagation="true" accept=".json" class="d-none" id="fileInput" />
-                            <button class="btn btn-primary btn-sm me-2" @onclick="TriggerFileInput" @onclick:stopPropagation="true">Load Project</button>
+                            <label for="fileInput" class="btn btn-primary btn-sm me-2" @onclick:stopPropagation="true" style="margin-bottom: 0; cursor: pointer;">Load Project</label>
                         </button>
                     </h2>
                     <div class="accordion-collapse collapse @(isBeforeOpen ? "show" : "")">
@@ -267,6 +269,7 @@
 </div>
 
 @code {
+    private InputFile? fileInputRef;
     private string beforeText = "";
     private string afterText = "";
     private string statusText = "";
@@ -390,11 +393,6 @@ Focus on:
             return "text-warning fw-bold"; // Orange for >= 12GB
         else
             return "text-muted"; // Default gray
-    }
-
-    private async Task TriggerFileInput()
-    {
-        await JSRuntime.InvokeVoidAsync("document.getElementById('fileInput').click()");
     }
 
     private async Task LoadFile(InputFileChangeEventArgs e)

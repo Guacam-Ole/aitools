@@ -495,6 +495,11 @@ public class OllamaService
 3. ALL existing appearance details MUST be preserved in your output
 4. If a character isn't mentioned in the current chapter, KEEP THEM EXACTLY AS THEY WERE
 5. Focus EXCLUSIVELY on what the character LOOKS LIKE, not what they DO
+6. NEVER include role or chapter info in the 'name' field - names ONLY
+7. NEVER create duplicate characters - ALWAYS match existing ones by name and role
+8. IGNORE settings, locations, and objects - ONLY track living characters
+9. Generic groups (""Goblins"", ""Orcs"", ""Tieflings"") are NOT individual characters - skip them
+10. NEVER return empty descriptions - if you have no appearance info, use existing description
 
 WHAT TO INCLUDE IN DESCRIPTION (APPEARANCE ONLY):
 - Gender (male, female, non-binary, etc.)
@@ -506,7 +511,7 @@ WHAT TO INCLUDE IN DESCRIPTION (APPEARANCE ONLY):
 - Facial features (scars, beard, distinctive nose, etc.)
 - Clothing/attire (what they typically wear)
 - Distinctive physical marks (tattoos, scars, birthmarks)
-- Species (if not human: elf, dwarf, alien, etc.)
+- Species (if not human: elf, dwarf, alien, tiefling, etc.)
 
 WHAT NOT TO INCLUDE:
 - ❌ Personality traits (""brave"", ""kind"", ""cunning"")
@@ -515,38 +520,45 @@ WHAT NOT TO INCLUDE:
 - ❌ Plot events (""revealed in chapter 2"")
 - ❌ Skills or abilities (""skilled archer"", ""powerful mage"")
 - ❌ Emotional states (""angry"", ""happy"")
+- ❌ Settings/locations (""Baldur's Gate"", ""Tavern"", ""Inn"")
+- ❌ Generic groups (""Goblins"", ""Orcs"", ""Soldiers"")
+- ❌ Role information in name field (WRONG: ""Astarion (Rogue)"", CORRECT: name=""Astarion"", role=""Rogue"")
 
-MERGING CHARACTERS:
-- Compare new characters with existing ones based on PHYSICAL DESCRIPTION
-- If name is revealed, update the name but KEEP all appearance details
-- If more appearance details are revealed, ADD them to existing description
-- Characters not seen in current chapter remain unchanged
+MATCHING EXISTING CHARACTERS:
+Before creating a new character, check if they already exist:
+1. Compare by name (exact match, case-insensitive)
+2. If name matches, UPDATE existing entry - DO NOT create duplicate
+3. If ""Unknown"" with same role exists, that might be this character
+4. Only create NEW entry if you're certain it's a different character
+5. When in doubt, UPDATE existing rather than create new
 
 EXAMPLES:
 
-Example 1 - Name Revealed:
-Previous: [{""name"": ""Unknown"", ""role"": ""Narrator"", ""description"": ""Female, appears to be in her twenties, average height""}]
-Current chapter: Her name is Elvira
-Result: [{""name"": ""Elvira"", ""role"": ""Narrator"", ""description"": ""Female, appears to be in her twenties, average height""}]
+Example 1 - Matching by Name:
+Known: [{""name"": ""Shadowheart"", ""role"": ""Mage"", ""description"": ""Half-elf, brown hair""}]
+Current: Shadowheart casts a spell
+Result: [{""name"": ""Shadowheart"", ""role"": ""Mage"", ""description"": ""Half-elf, brown hair""}] (NO CHANGE - no new appearance info)
 
-Example 2 - Adding Appearance Details (CORRECT):
-Previous: [{""name"": ""Elvira"", ""role"": ""Protagonist"", ""description"": ""Young woman, shoulder-length brown hair, green eyes""}]
-Current chapter: Shows she wears a blue cloak and has a scar on her left cheek
-Result: [{""name"": ""Elvira"", ""role"": ""Protagonist"", ""description"": ""Young woman, shoulder-length brown hair, green eyes, blue cloak, scar on left cheek""}]
+Example 2 - Name Revealed:
+Known: [{""name"": ""Unknown"", ""role"": ""Narrator"", ""description"": ""Female, twenties, average height""}]
+Current: Her name is Elvira
+Result: [{""name"": ""Elvira"", ""role"": ""Narrator"", ""description"": ""Female, twenties, average height""}]
 
-Example 3 - What NOT to do (WRONG):
-❌ WRONG: ""Young woman, brave and resourceful, wears blue cloak"" (includes personality)
-❌ WRONG: ""Tall man who guards the palace"" (includes role/action)
-✅ CORRECT: ""Tall man, muscular build, short black hair, wears leather armor""
+Example 3 - Adding Appearance (CORRECT):
+Known: [{""name"": ""Elvira"", ""role"": ""Protagonist"", ""description"": ""Young woman, brown hair, green eyes""}]
+Current: She wears a blue cloak and has a scar on her left cheek
+Result: [{""name"": ""Elvira"", ""role"": ""Protagonist"", ""description"": ""Young woman, brown hair, green eyes, blue cloak, scar on left cheek""}]
 
-Return as JSON array:
-[
-  {
-    ""name"": ""Character name or Unknown"",
-    ""role"": ""Their role (Protagonist, Antagonist, Narrator, Guard, etc.)"",
-    ""description"": ""ONLY physical appearance details""
-  }
-]";
+Return as JSON object with a 'characters' array. DO NOT include this example structure in your actual response:
+{
+  ""characters"": [
+    {
+      ""name"": ""Elvira"",
+      ""role"": ""Protagonist"",
+      ""description"": ""Young woman, brown hair, green eyes""
+    }
+  ]
+}";
 
         var userPrompt = new StringBuilder();
 
@@ -564,16 +576,19 @@ Return as JSON array:
         userPrompt.AppendLine("RAW CHAPTER TO ANALYZE:");
         userPrompt.AppendLine(rawChapter);
         userPrompt.AppendLine();
-        userPrompt.AppendLine("Provide the updated character list as JSON array:");
+        userPrompt.AppendLine("Provide the updated character list as JSON object with 'characters' array:");
 
         var response = await CallOllamaAsync(request.ModelName, systemPrompt, userPrompt.ToString(), 0.3, request.ContextWindowSize, jsonFormat: true);
 
         try
         {
-            return JsonSerializer.Deserialize<List<CharacterInfo>>(response) ?? request.KnownCharacters;
+            var wrapper = JsonSerializer.Deserialize<CharacterListWrapper>(response);
+            return wrapper?.Characters ?? request.KnownCharacters;
         }
-        catch
+        catch (Exception e)
         {
+            Console.WriteLine($"[ExtractCharactersFromRaw] Deserialization error: {e.Message}");
+            Console.WriteLine($"[ExtractCharactersFromRaw] Response was: {response}");
             return request.KnownCharacters;
         }
     }
@@ -584,44 +599,49 @@ Return as JSON array:
 
         var systemPrompt = @"You are a character analyst for stories. Your task is to identify all characters in a chapter and track them with name, role, and description.
 
+!!!!! ABSOLUTELY CRITICAL RULES !!!!!
+1. NEVER include role or chapter info in the 'name' field - names ONLY
+2. NEVER create duplicate characters - ALWAYS match existing ones by name and role
+3. IGNORE settings, locations, and objects - ONLY track living characters
+4. Generic groups (""Goblins"", ""Orcs"", ""Tieflings"") are NOT individual characters - skip them
+5. NEVER return empty descriptions - if you have no info, use existing description
+6. ALL existing information MUST be preserved - you can only ADD, never remove
+
 INSTRUCTIONS:
 - Review the provided chapter text
-- Identify all characters mentioned (main characters, side characters, anyone with a name or role)
+- Identify all individual named characters (NOT groups, NOT locations)
 - For each character, provide:
-  * name: The character's actual name if known, otherwise use ""Unknown"" or a placeholder like ""Unknown Narrator""
-  * role: Their role in the story (e.g., ""Protagonist"", ""Antagonist"", ""Narrator"", ""Mentor"", ""Side Character"", ""Guard"", etc.)
-  * description: Key traits, relationships, physical features, personality, and any important details
-- IMPORTANT: If a previously unknown character's name is revealed, UPDATE the entry:
-  * Change the key from ""Unknown"" to the actual name
-  * Keep the same role
-  * Update the description with the new information
-  * Example: If ""Unknown Narrator"" becomes ""Elvira"", use ""Elvira"" as the key and keep role as ""Narrator/Protagonist""
-- If a character was already in the known characters list, preserve their information and ADD any NEW details from this chapter
-- The role field helps connect characters across chapters when names are revealed later
-- Return ONLY a JSON object where each key is a unique identifier (name if known, descriptive placeholder if not)
+  * name: Character's actual name if known, otherwise ""Unknown""
+  * role: Their role (Protagonist, Antagonist, Narrator, Mentor, Guard, etc.)
+  * description: Physical appearance, traits, and important details
+- If a character already exists in the known list, UPDATE them (don't create duplicate)
+- If ""Unknown"" character's name is revealed, update the name but keep role and description
 
-Example output:
+WHAT NOT TO INCLUDE:
+- ❌ Settings/locations (""Baldur's Gate"", ""Tavern"", ""Inn"")
+- ❌ Generic groups (""Goblins"", ""Orcs"", ""Soldiers"")
+- ❌ Role in name field (WRONG: ""Astarion (Rogue)"", CORRECT: name=""Astarion"", role=""Rogue"")
+
+MATCHING EXISTING CHARACTERS:
+1. Compare by name (exact match, case-insensitive)
+2. If name matches, UPDATE existing entry - DO NOT create duplicate
+3. Only create NEW entry if you're certain it's a different character
+4. When in doubt, UPDATE existing rather than create new
+
+Return as JSON object with a 'characters' array. DO NOT include this example in your response:
 {
-  ""Elvira"": {
-    ""name"": ""Elvira"",
-    ""role"": ""Protagonist/Narrator"",
-    ""description"": ""The main character telling the story, female, brave and resourceful, has a mysterious past""
-  },
-  ""Unknown Old Man"": {
-    ""name"": ""Unknown"",
-    ""role"": ""Mentor"",
-    ""description"": ""Elderly man with a long beard, appears to know secrets about Elvira's past, speaks in riddles""
-  },
-  ""Lord Malachar"": {
-    ""name"": ""Lord Malachar"",
-    ""role"": ""Antagonist"",
-    ""description"": ""Ruler of the shadow realm, dark sorcerer, seeks an ancient artifact""
-  },
-  ""Guard #1"": {
-    ""name"": ""Unknown"",
-    ""role"": ""Guard"",
-    ""description"": ""Palace guard who helps Elvira escape, loyal but conflicted""
-  }
+  ""characters"": [
+    {
+      ""name"": ""Elvira"",
+      ""role"": ""Protagonist"",
+      ""description"": ""Female, brave and resourceful, mysterious past""
+    },
+    {
+      ""name"": ""Lord Malachar"",
+      ""role"": ""Antagonist"",
+      ""description"": ""Dark sorcerer, seeks ancient artifact""
+    }
+  ]
 }";
 
         var userPrompt = new StringBuilder();
@@ -640,16 +660,19 @@ Example output:
         userPrompt.AppendLine("REVISED CHAPTER TO ANALYZE:");
         userPrompt.AppendLine(revisedChapter);
         userPrompt.AppendLine();
-        userPrompt.AppendLine("Provide the updated character list as JSON array:");
+        userPrompt.AppendLine("Provide the updated character list as JSON object with 'characters' array:");
 
         var response = await CallOllamaAsync(request.ModelName, systemPrompt, userPrompt.ToString(), 0.3, request.ContextWindowSize, jsonFormat: true);
 
         try
         {
-            return JsonSerializer.Deserialize<List<CharacterInfo>>(response) ?? request.KnownCharacters;
+            var wrapper = JsonSerializer.Deserialize<CharacterListWrapper>(response);
+            return wrapper?.Characters ?? request.KnownCharacters;
         }
-        catch
+        catch (Exception e)
         {
+            Console.WriteLine($"[ExtractCharactersFromRevised] Deserialization error: {e.Message}");
+            Console.WriteLine($"[ExtractCharactersFromRevised] Response was: {response}");
             return request.KnownCharacters;
         }
     }
@@ -939,6 +962,12 @@ public class CharacterInfo
 
     [JsonPropertyName("lastChangedInChapter")]
     public int? LastChangedInChapter { get; set; } = null;
+}
+
+public class CharacterListWrapper
+{
+    [JsonPropertyName("characters")]
+    public List<CharacterInfo> Characters { get; set; } = new();
 }
 
 public class ChapterState
