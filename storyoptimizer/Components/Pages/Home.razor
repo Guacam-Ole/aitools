@@ -1,0 +1,787 @@
+@page "/"
+@using StoryOptimizer.Services
+@using System.Text.Json
+@using Microsoft.AspNetCore.Components.Forms
+@inject OllamaService OllamaService
+@inject IJSRuntime JSRuntime
+@rendermode InteractiveServer
+
+<PageTitle>Story Optimizer</PageTitle>
+
+<div class="container-fluid">
+    <h1 class="mb-4">Story Optimizer</h1>
+
+    @if (!string.IsNullOrEmpty(statusText))
+    {
+        <div class="row mb-3">
+            <div class="col-md-12">
+                <div class="alert @(statusText.StartsWith("Error") ? "alert-danger" : "alert-info") alert-dismissible fade show" role="alert">
+                    @statusText
+                    <button type="button" class="btn-close" @onclick="() => statusText = string.Empty"></button>
+                </div>
+            </div>
+        </div>
+    }
+
+    <div class="row mb-3">
+        <div class="col-md-6">
+            <div class="accordion" id="inputAccordion">
+                <!-- Before Section -->
+                <div class="accordion-item">
+                    <h2 class="accordion-header">
+                        <button class="accordion-button @(isBeforeOpen ? "" : "collapsed")" type="button" @onclick="() => isBeforeOpen = !isBeforeOpen">
+                            <span class="me-auto">Before</span>
+                            <InputFile OnChange="LoadFile" @onclick:stopPropagation="true" accept=".json" class="d-none" id="fileInput" />
+                            <button class="btn btn-primary btn-sm me-2" @onclick="TriggerFileInput" @onclick:stopPropagation="true">Load</button>
+                        </button>
+                    </h2>
+                    <div class="accordion-collapse collapse @(isBeforeOpen ? "show" : "")">
+                        <div class="accordion-body">
+                            <textarea class="form-control" rows="20" @bind="beforeText" @bind:event="onchange" placeholder="Original text..."></textarea>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Summary Section -->
+                <div class="accordion-item">
+                    <h2 class="accordion-header">
+                        <button class="accordion-button @(isSummaryOpen ? "" : "collapsed")" type="button" @onclick="() => isSummaryOpen = !isSummaryOpen">
+                            Summary (@chapterSummaries.Count chapters)
+                        </button>
+                    </h2>
+                    <div class="accordion-collapse collapse @(isSummaryOpen ? "show" : "")">
+                        <div class="accordion-body">
+                            @if (chapterSummaries.Count == 0)
+                            {
+                                <p class="text-muted">No chapters processed yet.</p>
+                            }
+                            else
+                            {
+                                <div class="list-group">
+                                    @for (int i = 0; i < chapterSummaries.Count; i++)
+                                    {
+                                        var index = i; // Capture for closure
+                                        <div class="list-group-item">
+                                            @if (editingSummaryIndex == index)
+                                            {
+                                                <!-- Edit Mode -->
+                                                <h6 class="mb-2">Chapter @(index + 1)</h6>
+                                                <textarea class="form-control mb-2" rows="3" @bind="editingSummaryText"></textarea>
+                                                <div>
+                                                    <button class="btn btn-success btn-sm me-2" @onclick="() => SaveSummaryEdit(index)">Save</button>
+                                                    <button class="btn btn-secondary btn-sm" @onclick="CancelSummaryEdit">Cancel</button>
+                                                </div>
+                                            }
+                                            else
+                                            {
+                                                <!-- View Mode -->
+                                                <div class="d-flex justify-content-between align-items-start">
+                                                    <div class="flex-grow-1">
+                                                        <h6 class="mb-1">Chapter @(index + 1)</h6>
+                                                        <p class="mb-0">@chapterSummaries[index]</p>
+                                                    </div>
+                                                    <div class="btn-group-vertical ms-2">
+                                                        <button class="btn btn-outline-primary btn-sm" @onclick="() => StartSummaryEdit(index)">Edit</button>
+                                                        <button class="btn btn-outline-danger btn-sm" @onclick="() => RemoveSummary(index)">Remove</button>
+                                                    </div>
+                                                </div>
+                                            }
+                                        </div>
+                                    }
+                                </div>
+                            }
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Characters Section -->
+                <div class="accordion-item">
+                    <h2 class="accordion-header">
+                        <button class="accordion-button @(isCharactersOpen ? "" : "collapsed")" type="button" @onclick="() => isCharactersOpen = !isCharactersOpen">
+                            Characters (@knownCharacters.Count)
+                        </button>
+                    </h2>
+                    <div class="accordion-collapse collapse @(isCharactersOpen ? "show" : "")">
+                        <div class="accordion-body">
+                            @if (knownCharacters.Count == 0)
+                            {
+                                <p class="text-muted">No characters identified yet.</p>
+                            }
+                            else
+                            {
+                                <div class="list-group">
+                                    @for (int i = 0; i < knownCharacters.Count; i++)
+                                    {
+                                        var index = i; // Capture for closure
+                                        var character = knownCharacters[index];
+                                        <div class="list-group-item">
+                                            @if (editingCharacterIndex == index)
+                                            {
+                                                <!-- Edit Mode -->
+                                                <div class="mb-2">
+                                                    <label class="form-label mb-1"><strong>Name:</strong></label>
+                                                    <input type="text" class="form-control form-control-sm" @bind="editingCharacterName" />
+                                                </div>
+                                                <div class="mb-2">
+                                                    <label class="form-label mb-1"><strong>Role:</strong></label>
+                                                    <input type="text" class="form-control form-control-sm" @bind="editingCharacterRole" />
+                                                </div>
+                                                <div class="mb-2">
+                                                    <label class="form-label mb-1"><strong>Appearance:</strong></label>
+                                                    <textarea class="form-control form-control-sm" rows="3" @bind="editingCharacterDescription"></textarea>
+                                                </div>
+                                                <div class="mb-2">
+                                                    <label class="form-label mb-1"><strong>Introduced in Chapter:</strong></label>
+                                                    <input type="number" class="form-control form-control-sm" @bind="editingCharacterIntroduced" min="1" />
+                                                </div>
+                                                <div class="mb-2">
+                                                    <label class="form-label mb-1"><strong>Last Changed in Chapter:</strong></label>
+                                                    <input type="number" class="form-control form-control-sm" @bind="editingCharacterLastChanged" min="0" placeholder="Leave 0 if never changed" />
+                                                </div>
+                                                <div>
+                                                    <button class="btn btn-success btn-sm me-2" @onclick="() => SaveCharacterEdit(index)">Save</button>
+                                                    <button class="btn btn-secondary btn-sm" @onclick="CancelCharacterEdit">Cancel</button>
+                                                </div>
+                                            }
+                                            else
+                                            {
+                                                <!-- View Mode -->
+                                                <div class="d-flex w-100 justify-content-between align-items-start">
+                                                    <div class="flex-grow-1">
+                                                        <div class="d-flex w-100 justify-content-between">
+                                                            <h6 class="mb-1">@character.Name</h6>
+                                                            <small class="text-muted">@character.Role</small>
+                                                        </div>
+                                                        <div class="mb-1">
+                                                            @if (character.IntroducedInChapter > 0)
+                                                            {
+                                                                <small class="text-muted">Introduced: Ch @character.IntroducedInChapter</small>
+                                                            }
+                                                            @if (character.LastChangedInChapter.HasValue)
+                                                            {
+                                                                <small class="text-muted ms-2">| Last changed: Ch @character.LastChangedInChapter.Value</small>
+                                                            }
+                                                        </div>
+                                                        <p class="mb-0"><strong>Appearance:</strong> @character.Description</p>
+                                                    </div>
+                                                    <div class="btn-group-vertical ms-2">
+                                                        <button class="btn btn-outline-primary btn-sm" @onclick="() => StartCharacterEdit(index)">Edit</button>
+                                                        <button class="btn btn-outline-danger btn-sm" @onclick="() => RemoveCharacter(index)">Remove</button>
+                                                    </div>
+                                                </div>
+                                            }
+                                        </div>
+                                    }
+                                </div>
+                            }
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-6">
+            <div class="d-flex align-items-center mb-2">
+                <label class="form-label me-auto mb-0">After</label>
+                <button class="btn btn-success btn-sm me-2" @onclick="SaveProject">Save Project</button>
+                <button class="btn btn-info btn-sm" @onclick="SaveAfterText">Save Text</button>
+            </div>
+            <textarea class="form-control" rows="20" value="@afterText" @onchange="@((ChangeEventArgs e) => afterText = e.Value?.ToString() ?? "")" placeholder="Processed text..."></textarea>
+        </div>
+    </div>
+
+    <div class="row mb-3">
+        <div class="col-md-3">
+            <label class="form-label">Model</label>
+            <select class="form-select" @bind="selectedModel" @bind:after="OnModelChanged" disabled="@isLoadingModels">
+                @if (isLoadingModels)
+                {
+                    <option value="">Loading models...</option>
+                }
+                else if (models.Count == 0)
+                {
+                    <option value="">No models available</option>
+                }
+                else
+                {
+                    <option value="">Select a model...</option>
+                    @foreach (var model in models)
+                    {
+                        <option value="@model">@model</option>
+                    }
+                }
+            </select>
+        </div>
+        <div class="col-md-3">
+            <label class="form-label">Temperature: @temperature.ToString("0.0")</label>
+            <input type="range" class="form-range" min="0.0" max="1.5" step="0.1" @bind="temperature" />
+        </div>
+        <div class="col-md-3">
+            <label class="form-label">Context Window: @contextWindowSize (max: @maxContextWindowSize)</label>
+            <input type="range" class="form-range" min="4096" max="@maxContextWindowSize" step="4096" @bind="contextWindowSize" />
+            <div class="mt-1">
+                <small class="@GetVramColorClass()">
+                    Estimated VRAM: @EstimatedVramGB.ToString("F1") GB
+                </small>
+            </div>
+        </div>
+        <div class="col-md-3">
+            <label class="form-label">Chapter</label>
+            <input type="text" class="form-control" @bind="chapter" />
+        </div>
+    </div>
+
+    <div class="row mb-3">
+        <div class="col-md-12">
+            <label class="form-label">Ruleset</label>
+            <textarea class="form-control" rows="8" value="@ruleset" @onchange="@((ChangeEventArgs e) => ruleset = e.Value?.ToString() ?? "")" placeholder="AI system prompt..."></textarea>
+        </div>
+    </div>
+
+    <div class="row">
+        <div class="col-md-12">
+            <button class="btn btn-info me-2" @onclick="PrepareChapters" disabled="@isProcessing">
+                @if (isProcessing && !isPrepared)
+                {
+                    <span>Preparing...</span>
+                }
+                else
+                {
+                    <span>Prepare (Extract Characters & Summaries)</span>
+                }
+            </button>
+            <button class="btn btn-primary" @onclick="ApplyRuleset" disabled="@(isProcessing || !isPrepared)">
+                @if (isProcessing && isPrepared)
+                {
+                    <span>Revising...</span>
+                }
+                else
+                {
+                    <span>Apply Ruleset (Revise Chapters)</span>
+                }
+            </button>
+            @if (isPrepared)
+            {
+                <span class="ms-3 text-success">✓ Prepared</span>
+            }
+        </div>
+    </div>
+</div>
+
+@code {
+    private string beforeText = "";
+    private string afterText = "";
+    private string statusText = "";
+    private string selectedModel = "";
+    private double temperature = 0.8;
+    private int contextWindowSize = 4096;
+    private int maxContextWindowSize = 32768;
+    private ModelInfo? currentModelInfo = null;
+    private string chapter = "##";
+    private string ruleset = @"Review and improve the chapter while maintaining the story's tone and style.
+Focus on:
+- Clear and engaging prose
+- Consistent character voices
+- Smooth pacing and flow
+- Vivid descriptions
+- Natural dialogue
+- Fixing any grammatical errors or awkward phrasing";
+    private List<string> models = new();
+    private bool isLoadingModels = true;
+    private bool isProcessing = false;
+    private bool isPrepared = false;
+
+    // Accordion state
+    private bool isBeforeOpen = true;
+    private bool isSummaryOpen = false;
+    private bool isCharactersOpen = false;
+
+    // Story tracking
+    private List<CharacterInfo> knownCharacters = new();
+    private List<string> chapterSummaries = new();
+
+    // Preparation result for later revision
+    private PrepareChaptersResult? prepareResult = null;
+    private List<string>? preparedChapters = null;
+
+    // Edit state for characters
+    private int editingCharacterIndex = -1;
+    private string editingCharacterName = "";
+    private string editingCharacterRole = "";
+    private string editingCharacterDescription = "";
+    private int editingCharacterIntroduced = 1;
+    private int editingCharacterLastChanged = 0;
+
+    // Edit state for summaries
+    private int editingSummaryIndex = -1;
+    private string editingSummaryText = "";
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadModelsFromOllama();
+    }
+
+    private async Task LoadModelsFromOllama()
+    {
+        try
+        {
+            isLoadingModels = true;
+            models = await OllamaService.GetAvailableModelsAsync();
+        }
+        finally
+        {
+            isLoadingModels = false;
+        }
+    }
+
+    private async Task OnModelChanged()
+    {
+        if (string.IsNullOrEmpty(selectedModel))
+        {
+            maxContextWindowSize = 32768; // Default max
+            contextWindowSize = 4096; // Reset to default
+            currentModelInfo = null;
+            return;
+        }
+
+        try
+        {
+            // Get the model's info (max context, size, quantization)
+            currentModelInfo = await OllamaService.GetModelInfoAsync(selectedModel);
+            maxContextWindowSize = currentModelInfo.MaxContext;
+
+            // Adjust current context window if it exceeds the new max
+            if (contextWindowSize > maxContextWindowSize)
+            {
+                contextWindowSize = maxContextWindowSize;
+            }
+            // Or set to a reasonable default (half of max)
+            else if (contextWindowSize == 4096 && maxContextWindowSize > 4096)
+            {
+                contextWindowSize = Math.Min(8192, maxContextWindowSize);
+            }
+
+            StateHasChanged();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error getting model info: {ex.Message}");
+            maxContextWindowSize = 32768; // Fallback
+            currentModelInfo = new ModelInfo { MaxContext = 32768, ModelSizeInBillions = 7.0, QuantizationBits = 4.5 };
+        }
+    }
+
+    private double EstimatedVramGB
+    {
+        get
+        {
+            if (currentModelInfo == null)
+                return 0.0;
+
+            return OllamaService.CalculateVramUsageGB(currentModelInfo, contextWindowSize);
+        }
+    }
+
+    private string GetVramColorClass()
+    {
+        var vram = EstimatedVramGB;
+
+        if (vram >= 16.0)
+            return "text-danger fw-bold"; // Red for >= 16GB
+        else if (vram >= 12.0)
+            return "text-warning fw-bold"; // Orange for >= 12GB
+        else
+            return "text-muted"; // Default gray
+    }
+
+    private async Task TriggerFileInput()
+    {
+        await JSRuntime.InvokeVoidAsync("document.getElementById('fileInput').click()");
+    }
+
+    private async Task LoadFile(InputFileChangeEventArgs e)
+    {
+        try
+        {
+            var file = e.File;
+            if (file == null) return;
+
+            using var stream = file.OpenReadStream(maxAllowedSize: 10 * 1024 * 1024); // 10MB max
+            using var reader = new StreamReader(stream);
+            var json = await reader.ReadToEndAsync();
+
+            var saveData = JsonSerializer.Deserialize<SaveData>(json);
+            if (saveData == null)
+            {
+                statusText = "Error: Invalid JSON file format.";
+                return;
+            }
+
+            // Load all settings
+            selectedModel = saveData.Model;
+            temperature = saveData.Temperature;
+            contextWindowSize = saveData.ContextWindow;
+            chapter = saveData.Chapter;
+            ruleset = saveData.Ruleset;
+            beforeText = saveData.Before;
+            knownCharacters = saveData.Characters;
+            chapterSummaries = saveData.Summaries;
+
+            // Update model info if model was loaded
+            if (!string.IsNullOrEmpty(selectedModel))
+            {
+                await OnModelChanged();
+            }
+
+            statusText = $"Project loaded successfully! Model: {selectedModel}, Characters: {knownCharacters.Count}, Summaries: {chapterSummaries.Count}";
+            StateHasChanged();
+        }
+        catch (Exception ex)
+        {
+            statusText = $"Error loading file: {ex.Message}";
+        }
+    }
+
+    private async Task SaveProject()
+    {
+        try
+        {
+            var saveData = new SaveData
+            {
+                Model = selectedModel,
+                Temperature = temperature,
+                ContextWindow = contextWindowSize,
+                Chapter = chapter,
+                Ruleset = ruleset,
+                Before = beforeText,
+                Characters = knownCharacters,
+                Summaries = chapterSummaries
+            };
+
+            var json = JsonSerializer.Serialize(saveData, new JsonSerializerOptions
+            {
+                WriteIndented = true
+            });
+
+            var fileName = $"story-project-{DateTime.Now:yyyy-MM-dd-HHmmss}.json";
+
+            await JSRuntime.InvokeVoidAsync("downloadFile", fileName, "application/json", json);
+
+            statusText = $"Project saved as {fileName}";
+        }
+        catch (Exception ex)
+        {
+            statusText = $"Error saving project: {ex.Message}";
+        }
+    }
+
+    private async Task SaveAfterText()
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(afterText))
+            {
+                statusText = "Error: No text to save.";
+                return;
+            }
+
+            var fileName = $"story-output-{DateTime.Now:yyyy-MM-dd-HHmmss}.txt";
+
+            await JSRuntime.InvokeVoidAsync("downloadFile", fileName, "text/plain", afterText);
+
+            statusText = $"Text saved as {fileName}";
+        }
+        catch (Exception ex)
+        {
+            statusText = $"Error saving text: {ex.Message}";
+        }
+    }
+
+    private async Task PrepareChapters()
+    {
+        Console.WriteLine($"PrepareChapters called - beforeText length: {beforeText?.Length ?? 0}");
+
+        if (string.IsNullOrWhiteSpace(selectedModel))
+        {
+            statusText = "Error: Please select a model first.";
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(beforeText))
+        {
+            statusText = $"Error: Please provide text to process. Current length: {beforeText?.Length ?? 0}";
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(chapter))
+        {
+            statusText = "Error: Please provide a chapter marker.";
+            return;
+        }
+
+        try
+        {
+            isProcessing = true;
+            isPrepared = false;
+            afterText = "";
+            statusText = "";
+            StateHasChanged();
+
+            // Split the story into chapters
+            var chapters = SplitIntoChapters(beforeText, chapter);
+
+            if (chapters.Count == 0)
+            {
+                statusText = $"Error: No chapters found with marker '{chapter}'";
+                isProcessing = false;
+                return;
+            }
+
+            // Reset tracking lists for new processing run
+            knownCharacters.Clear();
+            chapterSummaries.Clear();
+
+            statusText = $"Preparing {chapters.Count} chapters (extracting characters and creating summaries)...";
+            StateHasChanged();
+
+            // Prepare chapters (Pass 1 & 2: Character extraction and summarization)
+            prepareResult = await OllamaService.PrepareChaptersAsync(
+                selectedModel,
+                temperature,
+                contextWindowSize,
+                chapters,
+                chapter,
+                // Progress callback to update UI in real-time
+                (status, characters, summaries) =>
+                {
+                    statusText = status;
+                    knownCharacters = characters;
+                    chapterSummaries = summaries;
+                    StateHasChanged();
+                }
+            );
+
+            // Store the prepared chapters for later revision
+            preparedChapters = chapters;
+
+            // Update UI with final results
+            knownCharacters = prepareResult.AllCharacters;
+            chapterSummaries = prepareResult.AllSummaries;
+
+            isPrepared = true;
+            statusText = $"Preparation complete! Total chapters: {chapters.Count}, Characters found: {knownCharacters.Count}. Click 'Apply Ruleset' to revise chapters.";
+            StateHasChanged();
+        }
+        catch (Exception ex)
+        {
+            statusText = $"Error: {ex.Message}";
+            isPrepared = false;
+        }
+        finally
+        {
+            isProcessing = false;
+        }
+    }
+
+    private async Task ApplyRuleset()
+    {
+        Console.WriteLine($"ApplyRuleset called - isPrepared: {isPrepared}");
+
+        if (!isPrepared || prepareResult == null || preparedChapters == null)
+        {
+            statusText = "Error: Please click 'Prepare' first to extract characters and summaries.";
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(selectedModel))
+        {
+            statusText = "Error: Please select a model first.";
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(ruleset))
+        {
+            statusText = "Error: Please provide a ruleset.";
+            return;
+        }
+
+        try
+        {
+            isProcessing = true;
+            afterText = "";
+            statusText = $"Revising {preparedChapters.Count} chapters using prepared data...";
+            StateHasChanged();
+
+            // Revise chapters (Pass 3: Revision using prepared data)
+            var revisedChapters = await OllamaService.ReviseChaptersAsync(
+                selectedModel,
+                temperature,
+                contextWindowSize,
+                preparedChapters,
+                ruleset,
+                prepareResult
+            );
+
+            // Build the output from all revised chapters
+            foreach (var revisedChapter in revisedChapters)
+            {
+                afterText += revisedChapter;
+                afterText += "\n\n";
+            }
+
+            statusText = $"Revision complete! Total chapters: {preparedChapters.Count}, Characters used: {knownCharacters.Count}";
+            StateHasChanged();
+        }
+        catch (Exception ex)
+        {
+            statusText = $"Error: {ex.Message}";
+        }
+        finally
+        {
+            isProcessing = false;
+        }
+    }
+
+    // Character editing methods
+    private void StartCharacterEdit(int index)
+    {
+        var character = knownCharacters[index];
+        editingCharacterIndex = index;
+        editingCharacterName = character.Name;
+        editingCharacterRole = character.Role;
+        editingCharacterDescription = character.Description;
+        editingCharacterIntroduced = character.IntroducedInChapter;
+        editingCharacterLastChanged = character.LastChangedInChapter ?? 0;
+    }
+
+    private void SaveCharacterEdit(int index)
+    {
+        var character = knownCharacters[index];
+        character.Name = editingCharacterName;
+        character.Role = editingCharacterRole;
+        character.Description = editingCharacterDescription;
+        character.IntroducedInChapter = editingCharacterIntroduced;
+        character.LastChangedInChapter = editingCharacterLastChanged > 0 ? editingCharacterLastChanged : null;
+
+        editingCharacterIndex = -1;
+        statusText = $"Character '{character.Name}' updated successfully.";
+    }
+
+    private void CancelCharacterEdit()
+    {
+        editingCharacterIndex = -1;
+    }
+
+    private void RemoveCharacter(int index)
+    {
+        var characterName = knownCharacters[index].Name;
+        knownCharacters.RemoveAt(index);
+        statusText = $"Character '{characterName}' removed.";
+    }
+
+    // Summary editing methods
+    private void StartSummaryEdit(int index)
+    {
+        editingSummaryIndex = index;
+        editingSummaryText = chapterSummaries[index];
+    }
+
+    private void SaveSummaryEdit(int index)
+    {
+        chapterSummaries[index] = editingSummaryText;
+        editingSummaryIndex = -1;
+        statusText = $"Chapter {index + 1} summary updated successfully.";
+    }
+
+    private void CancelSummaryEdit()
+    {
+        editingSummaryIndex = -1;
+    }
+
+    private void RemoveSummary(int index)
+    {
+        chapterSummaries.RemoveAt(index);
+        statusText = $"Chapter {index + 1} summary removed.";
+    }
+
+    private List<string> SplitIntoChapters(string text, string chapterMarker)
+    {
+        var chapters = new List<string>();
+
+        if (string.IsNullOrWhiteSpace(text) || string.IsNullOrWhiteSpace(chapterMarker))
+        {
+            return chapters;
+        }
+
+        // Split by the chapter marker
+        var lines = text.Split('\n');
+        var currentChapter = new System.Text.StringBuilder();
+        bool inChapter = false;
+
+        foreach (var line in lines)
+        {
+            // Check if this line starts with the chapter marker
+            if (line.TrimStart().StartsWith(chapterMarker))
+            {
+                // Save the previous chapter if it exists
+                if (inChapter && currentChapter.Length > 0)
+                {
+                    chapters.Add(currentChapter.ToString().Trim());
+                    currentChapter.Clear();
+                }
+
+                // Mark that we're now in a chapter (skip the header line itself)
+                inChapter = true;
+            }
+            else if (inChapter)
+            {
+                // Add content lines to the current chapter
+                currentChapter.AppendLine(line);
+            }
+        }
+
+        // Don't forget the last chapter
+        if (inChapter && currentChapter.Length > 0)
+        {
+            chapters.Add(currentChapter.ToString().Trim());
+        }
+
+        return chapters;
+    }
+}
+
+<style>
+    #inputAccordion .accordion-body {
+        max-height: 600px;
+        overflow-y: auto;
+        padding: 1rem;
+    }
+
+    #inputAccordion .list-group {
+        max-height: 550px;
+        overflow-y: auto;
+    }
+
+    #inputAccordion .list-group-item {
+        border-left: 4px solid #0d6efd;
+        margin-bottom: 0.5rem;
+    }
+
+    #inputAccordion .accordion-button {
+        padding: 0.75rem 1rem;
+    }
+
+    #inputAccordion .accordion-button:not(.collapsed) {
+        background-color: #e7f1ff;
+        color: #0d6efd;
+    }
+
+    #collapseCharacters .list-group-item p {
+        font-size: 0.9rem;
+        margin-top: 0.25rem;
+    }
+
+    #collapseSummary .list-group-item h6 {
+        color: #0d6efd;
+        font-weight: 600;
+    }
+</style>
