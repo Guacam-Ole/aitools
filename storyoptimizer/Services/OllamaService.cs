@@ -192,7 +192,7 @@ public class OllamaService
         }
     }
 
-    public async Task<PrepareChaptersResult> PrepareChaptersAsync(
+    public async Task<(List<CharacterInfo> characters, List<string> summaries)> PrepareChaptersAsync(
         string modelName,
         double temperature,
         int contextWindowSize,
@@ -200,8 +200,6 @@ public class OllamaService
         string chapterMarker,
         Action<string, List<CharacterInfo>, List<string>>? onProgressUpdate = null)
     {
-        var chapterStates = new List<ChapterState>();
-
         try
         {
             Console.WriteLine($"\n{new string('=', 60)}");
@@ -222,13 +220,6 @@ public class OllamaService
                 var statusMsg = $"Getting Characters Chapter {i + 1}/{chapterContents.Count}";
                 Console.WriteLine($"[Pass 1] {statusMsg}");
                 onProgressUpdate?.Invoke(statusMsg, new List<CharacterInfo>(allCharacters), new List<string>());
-
-                // Create placeholder state - will be populated after Pass 1 completes
-                chapterStates.Add(new ChapterState
-                {
-                    CharactersKnownBeforeThisChapter = new List<CharacterInfo>(),
-                    SummariesBeforeThisChapter = new List<string>()  // No summaries yet
-                });
 
                 // Extract characters from raw chapter
                 var request = new ChapterProcessingRequest
@@ -283,35 +274,6 @@ public class OllamaService
             Console.WriteLine($"\n[Pass 1] Complete! Total unique characters: {allCharacters.Count}\n");
 
             // =================================================================
-            // POST-PASS 1: POPULATE CHARACTER LISTS FOR EACH CHAPTER
-            // =================================================================
-            Console.WriteLine("\n--- POST-PASS 1: FILTERING CHARACTERS FOR EACH CHAPTER ---\n");
-
-            for (int i = 0; i < chapterContents.Count; i++)
-            {
-                int currentChapter = i + 1; // Chapters are 1-based
-
-                // Filter characters based on:
-                // 1. IntroducedInChapter <= currentChapter (character must be introduced by now)
-                // 2. LastChangedInChapter is null OR >= currentChapter (character is still "active")
-                var availableCharacters = allCharacters.Where(c =>
-                    c.IntroducedInChapter <= currentChapter &&
-                    (c.LastChangedInChapter == null || c.LastChangedInChapter >= currentChapter)
-                ).ToList();
-
-                chapterStates[i].CharactersKnownBeforeThisChapter = availableCharacters;
-
-                Console.WriteLine($"[Post-Pass 1] Chapter {currentChapter}: {availableCharacters.Count} characters available");
-                foreach (var c in availableCharacters)
-                {
-                    var endInfo = c.LastChangedInChapter.HasValue ? $", ends in ch.{c.LastChangedInChapter}" : "";
-                    Console.WriteLine($"  - {c.Name} (introduced ch.{c.IntroducedInChapter}{endInfo})");
-                }
-            }
-
-            Console.WriteLine($"\n[Post-Pass 1] Complete!\n");
-
-            // =================================================================
             // PASS 2: SUMMARIZATION OF RAW CHAPTERS
             // =================================================================
             Console.WriteLine("\n--- PASS 2: SUMMARIZING CHAPTERS ---\n");
@@ -324,9 +286,6 @@ public class OllamaService
                 var statusMsg = $"Getting Summary Chapter {i + 1}/{chapterContents.Count}";
                 Console.WriteLine($"[Pass 2] {statusMsg}");
                 onProgressUpdate?.Invoke(statusMsg, new List<CharacterInfo>(allCharacters), new List<string>(allSummaries));
-
-                // Update the state with summaries from previous chapters
-                chapterStates[i].SummariesBeforeThisChapter = new List<string>(allSummaries);
 
                 var request = new ChapterProcessingRequest
                 {
@@ -356,12 +315,7 @@ public class OllamaService
             Console.WriteLine("PREPARATION COMPLETE!");
             Console.WriteLine($"{new string('=', 60)}\n");
 
-            return new PrepareChaptersResult
-            {
-                AllCharacters = allCharacters,
-                AllSummaries = allSummaries,
-                ChapterStates = chapterStates
-            };
+            return (allCharacters, allSummaries);
         }
         catch (Exception ex)
         {
@@ -380,7 +334,9 @@ public class OllamaService
         int contextWindowSize,
         List<string> chapterContents,
         string ruleset,
-        PrepareChaptersResult prepareResult)
+        List<CharacterInfo> allCharacters,
+        List<string> allSummaries,
+        Action<string, int, int>? onChapterRevised = null)
     {
         var revisedChapters = new List<string>();
 
@@ -393,28 +349,64 @@ public class OllamaService
 
             for (int i = 0; i < chapterContents.Count; i++)
             {
-                Console.WriteLine($"[Revision] Chapter {i + 1}/{chapterContents.Count} - Revising...");
-                Console.WriteLine($"  Using {prepareResult.ChapterStates[i].CharactersKnownBeforeThisChapter.Count} characters and {prepareResult.ChapterStates[i].SummariesBeforeThisChapter.Count} summaries from previous chapters");
+                int currentChapter = i + 1; // Chapters are 1-based
+
+                // Dynamically filter characters for this chapter based on IntroducedInChapter and LastChangedInChapter
+                var availableCharacters = allCharacters.Where(c =>
+                    c.IntroducedInChapter <= currentChapter &&
+                    (c.LastChangedInChapter == null || c.LastChangedInChapter >= currentChapter)
+                ).ToList();
+
+                // Get summaries up to (but not including) this chapter
+                var previousSummaries = allSummaries.Take(i).ToList();
+
+                Console.WriteLine($"[Revision] Chapter {currentChapter}/{chapterContents.Count} - Revising...");
+                Console.WriteLine($"  Using {availableCharacters.Count} characters and {previousSummaries.Count} summaries from previous chapters");
 
                 var request = new ChapterProcessingRequest
                 {
                     ModelName = modelName,
                     Temperature = temperature,
                     ContextWindowSize = contextWindowSize,
-                    KnownCharacters = prepareResult.ChapterStates[i].CharactersKnownBeforeThisChapter,  // Only previous!
-                    PreviousChapterSummaries = prepareResult.ChapterStates[i].SummariesBeforeThisChapter,  // Only previous!
+                    KnownCharacters = availableCharacters,
+                    PreviousChapterSummaries = previousSummaries,
                     ChapterContent = chapterContents[i],
                     ChapterMarker = "",
                     Ruleset = ruleset
                 };
 
-                var revisedChapter = await ReviseChapterAsync(request,
-                    prepareResult.ChapterStates[i].CharactersKnownBeforeThisChapter,
-                    prepareResult.ChapterStates[i].SummariesBeforeThisChapter);
+                // Retry logic: if revision returns less than 200 characters, retry up to 3 times
+                string revisedChapter = "";
+                int maxRetries = 3;
+                int attempt = 0;
+
+                while (attempt < maxRetries)
+                {
+                    attempt++;
+                    revisedChapter = await ReviseChapterAsync(request, availableCharacters, previousSummaries);
+
+                    if (revisedChapter.Length >= 200)
+                    {
+                        // Success - chapter is long enough
+                        break;
+                    }
+                    else if (attempt < maxRetries)
+                    {
+                        Console.WriteLine($"[Revision] Chapter {i + 1} returned only {revisedChapter.Length} chars (attempt {attempt}/{maxRetries}). Retrying...");
+                    }
+                    else
+                    {
+                        Console.WriteLine($"[Revision] Chapter {i + 1} returned only {revisedChapter.Length} chars after {maxRetries} attempts. Using last result.");
+                    }
+                }
 
                 revisedChapters.Add(revisedChapter);
 
                 Console.WriteLine($"[Revision] Chapter {i + 1} revised. Length: {revisedChapter.Length} chars");
+
+                // Notify UI of progress with the revised chapter
+                onChapterRevised?.Invoke(revisedChapter, currentChapter, chapterContents.Count);
+                await UnloadModelAsync(modelName);
             }
 
             Console.WriteLine($"\n{new string('=', 60)}");
@@ -422,7 +414,7 @@ public class OllamaService
             Console.WriteLine($"{new string('=', 60)}\n");
 
             // Final unload
-            await UnloadModelAsync(modelName);
+        
 
             return revisedChapters;
         }
@@ -962,25 +954,15 @@ public class CharacterInfo
 
     [JsonPropertyName("lastChangedInChapter")]
     public int? LastChangedInChapter { get; set; } = null;
+
+    [JsonPropertyName("portraitUrl")]
+    public string? PortraitUrl { get; set; } = null;
 }
 
 public class CharacterListWrapper
 {
     [JsonPropertyName("characters")]
     public List<CharacterInfo> Characters { get; set; } = new();
-}
-
-public class ChapterState
-{
-    public List<CharacterInfo> CharactersKnownBeforeThisChapter { get; set; } = new();
-    public List<string> SummariesBeforeThisChapter { get; set; } = new();
-}
-
-public class PrepareChaptersResult
-{
-    public List<CharacterInfo> AllCharacters { get; set; } = new();
-    public List<string> AllSummaries { get; set; } = new();
-    public List<ChapterState> ChapterStates { get; set; } = new();
 }
 
 public class SaveData

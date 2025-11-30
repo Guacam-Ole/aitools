@@ -15,6 +15,7 @@ builder.Services.AddSignalR(options =>
 
 builder.Services.AddHttpClient();
 builder.Services.AddScoped<OllamaService>();
+builder.Services.AddScoped<ComfyUIService>();
 
 var app = builder.Build();
 
