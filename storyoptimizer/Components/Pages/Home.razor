@@ -1,8 +1,10 @@
 @page "/"
 @using StoryOptimizer.Services
+@using StoryOptimizer.Models
 @using System.Text.Json
 @using Microsoft.AspNetCore.Components.Forms
-@inject OllamaService OllamaService
+@inject OllamaApiService OllamaApiService
+@inject StoryProcessingService StoryProcessingService
 @inject ComfyUIService ComfyUIService
 @inject IJSRuntime JSRuntime
 @rendermode InteractiveServer
@@ -379,7 +381,7 @@ Focus on:
         try
         {
             isLoadingModels = true;
-            models = await OllamaService.GetAvailableModelsAsync();
+            models = await OllamaApiService.GetAvailableModelsAsync();
         }
         finally
         {
@@ -400,7 +402,7 @@ Focus on:
         try
         {
             // Get the model's info (max context, size, quantization)
-            currentModelInfo = await OllamaService.GetModelInfoAsync(selectedModel);
+            currentModelInfo = await OllamaApiService.GetModelInfoAsync(selectedModel);
             maxContextWindowSize = currentModelInfo.MaxContext;
 
             // Adjust current context window if it exceeds the new max
@@ -431,7 +433,7 @@ Focus on:
             if (currentModelInfo == null)
                 return 0.0;
 
-            return OllamaService.CalculateVramUsageGB(currentModelInfo, contextWindowSize);
+            return OllamaApiService.CalculateVramUsageGB(currentModelInfo, contextWindowSize);
         }
     }
 
@@ -611,7 +613,7 @@ Focus on:
             StateHasChanged();
 
             // Extract characters
-            var characters = await OllamaService.ExtractCharactersAsync(
+            var characters = await StoryProcessingService.ExtractCharactersAsync(
                 selectedModel,
                 temperature,
                 contextWindowSize,
@@ -701,7 +703,7 @@ Focus on:
             StateHasChanged();
 
             // Generate summaries
-            var summaries = await OllamaService.GenerateSummariesAsync(
+            var summaries = await StoryProcessingService.GenerateSummariesAsync(
                 selectedModel,
                 temperature,
                 contextWindowSize,
@@ -775,7 +777,7 @@ Focus on:
             StateHasChanged();
 
             // Revise chapters (Pass 3: Revision using dynamically filtered characters and summaries)
-            var revisedChapters = await OllamaService.ReviseChaptersAsync(
+            var revisedChapters = await StoryProcessingService.ReviseChaptersAsync(
                 selectedModel,
                 temperature,
                 contextWindowSize,
