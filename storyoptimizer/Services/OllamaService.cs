@@ -48,26 +48,46 @@ public class OllamaService
 
             var modelInfo = new ModelInfo
             {
-                MaxContext = 4096,
+                MaxContext = 0,  // Start at 0 to make detection failures obvious
                 ModelSizeInBillions = 7.0,
                 QuantizationBits = 4.5
             };
 
-            // Parse context length from model_info (most reliable source)
-            if (ollamaModelInfo?.ModelInfo != null)
+            // Parse context length from parameters field (e.g., "num_ctx 8192")
+            if (!string.IsNullOrEmpty(ollamaModelInfo?.Parameters))
             {
-                // Try different architecture-specific keys
-                var contextKeys = new[] { "llama.context_length", "context_length", "max_position_embeddings" };
-                foreach (var key in contextKeys)
+                var numCtxMatch = Regex.Match(ollamaModelInfo.Parameters, @"num_ctx\s+(\d+)", RegexOptions.IgnoreCase);
+                if (numCtxMatch.Success && int.TryParse(numCtxMatch.Groups[1].Value, out int ctxSize))
                 {
-                    if (ollamaModelInfo.ModelInfo.TryGetValue(key, out var ctxValue))
+                    modelInfo.MaxContext = ctxSize;
+                    Console.WriteLine($"Found context length: {modelInfo.MaxContext} from parameters (num_ctx)");
+                }
+            }
+
+            // Fallback: Parse context length from model_info
+            if (modelInfo.MaxContext == 0 && ollamaModelInfo?.ModelInfo != null)
+            {
+                // Check for any key containing "context_length" (handles architecture-specific keys like "gemma2.context_length", "llama.context_length", etc.)
+                foreach (var kvp in ollamaModelInfo.ModelInfo)
+                {
+                    if (kvp.Key.Contains("context_length", StringComparison.OrdinalIgnoreCase))
                     {
-                        if (ctxValue is JsonElement jsonElement && jsonElement.ValueKind == JsonValueKind.Number)
+                        if (kvp.Value is JsonElement jsonElement && jsonElement.ValueKind == JsonValueKind.Number)
                         {
                             modelInfo.MaxContext = jsonElement.GetInt32();
-                            Console.WriteLine($"Found context length: {modelInfo.MaxContext} from key '{key}'");
+                            Console.WriteLine($"Found context length: {modelInfo.MaxContext} from model_info key '{kvp.Key}'");
                             break;
                         }
+                    }
+                }
+
+                // If still not found, try max_position_embeddings as last resort
+                if (modelInfo.MaxContext == 0 && ollamaModelInfo.ModelInfo.TryGetValue("max_position_embeddings", out var embedValue))
+                {
+                    if (embedValue is JsonElement jsonElement && jsonElement.ValueKind == JsonValueKind.Number)
+                    {
+                        modelInfo.MaxContext = jsonElement.GetInt32();
+                        Console.WriteLine($"Found context length: {modelInfo.MaxContext} from model_info key 'max_position_embeddings'");
                     }
                 }
             }
@@ -192,34 +212,60 @@ public class OllamaService
         }
     }
 
-    public async Task<(List<CharacterInfo> characters, List<string> summaries)> PrepareChaptersAsync(
+    private int GetMaxChapterLength(int contextWindowSize)
+    {
+        // Return maximum recommended chapter length based on context window size
+        return contextWindowSize switch
+        {
+            <= 4096 => 5000,
+            <= 8192 => 15000,
+            <= 16384 => 40000,
+            _ => 100000  // 32768 or above
+        };
+    }
+
+    public async Task<List<CharacterInfo>> ExtractCharactersAsync(
         string modelName,
         double temperature,
         int contextWindowSize,
         List<string> chapterContents,
         string chapterMarker,
-        Action<string, List<CharacterInfo>, List<string>>? onProgressUpdate = null)
+        Action<string, List<CharacterInfo>>? onProgressUpdate = null)
     {
         try
         {
             Console.WriteLine($"\n{new string('=', 60)}");
-            Console.WriteLine("PREPARING CHAPTERS - EXTRACTING CHARACTERS AND SUMMARIES");
+            Console.WriteLine("EXTRACTING CHARACTERS FROM CHAPTERS");
             Console.WriteLine($"Total chapters: {chapterContents.Count}");
             Console.WriteLine($"{new string('=', 60)}\n");
 
-            // =================================================================
-            // PASS 1: CHARACTER EXTRACTION FROM RAW CHAPTERS
-            // =================================================================
-            Console.WriteLine("\n--- PASS 1: EXTRACTING CHARACTERS ---\n");
+            // Validate chapter lengths against context window size
+            var maxChapterLength = GetMaxChapterLength(contextWindowSize);
+            for (int i = 0; i < chapterContents.Count; i++)
+            {
+                if (chapterContents[i] == null)
+                {
+                    Console.WriteLine($"⚠️  WARNING: Chapter {i + 1} is null, skipping validation");
+                    continue;
+                }
+
+                var chapterLength = chapterContents[i].Length;
+                if (chapterLength > maxChapterLength)
+                {
+                    var chapterNum = i + 1;
+                    Console.WriteLine($"⚠️  WARNING: Chapter {chapterNum} has {chapterLength} characters, exceeds maximum of {maxChapterLength} for context {contextWindowSize}");
+                    Console.WriteLine("   This may cause truncation or processing issues. Consider splitting this chapter or increasing context size.");
+                }
+            }
 
             var allCharacters = new List<CharacterInfo>();
 
             for (int i = 0; i < chapterContents.Count; i++)
             {
                 // Notify UI before starting
-                var statusMsg = $"Getting Characters Chapter {i + 1}/{chapterContents.Count}";
-                Console.WriteLine($"[Pass 1] {statusMsg}");
-                onProgressUpdate?.Invoke(statusMsg, new List<CharacterInfo>(allCharacters), new List<string>());
+                var statusMsg = $"Extracting characters from chapter {i + 1}/{chapterContents.Count}";
+                Console.WriteLine($"[ExtractCharacters] {statusMsg}");
+                onProgressUpdate?.Invoke(statusMsg, new List<CharacterInfo>(allCharacters));
 
                 // Extract characters from raw chapter
                 var request = new ChapterProcessingRequest
@@ -238,20 +284,38 @@ public class OllamaService
                 // Merge new characters into cumulative list and track which chapter they were introduced in
                 foreach (var extractedChar in extractedCharacters)
                 {
+                    // Skip characters with null or empty names (invalid data from LLM)
+                    if (string.IsNullOrWhiteSpace(extractedChar.Name))
+                    {
+                        Console.WriteLine($"[ExtractCharacters] Skipping invalid character with empty/null Name");
+                        continue;
+                    }
+
                     // Check if this character already exists (by name and role)
                     var existingChar = allCharacters.FirstOrDefault(c =>
+                        !string.IsNullOrWhiteSpace(c.Name) &&
                         c.Name.Equals(extractedChar.Name, StringComparison.OrdinalIgnoreCase) &&
-                        c.Role.Equals(extractedChar.Role, StringComparison.OrdinalIgnoreCase));
+                        (c.Role ?? "").Equals(extractedChar.Role ?? "", StringComparison.OrdinalIgnoreCase));
 
                     if (existingChar != null)
                     {
-                        // Check if description actually changed
-                        if (!existingChar.Description.Equals(extractedChar.Description, StringComparison.Ordinal))
+                        // Check if role or description changed (handle nulls)
+                        bool roleChanged = !(existingChar.Role ?? "").Equals(extractedChar.Role ?? "", StringComparison.OrdinalIgnoreCase);
+                        bool descriptionChanged = !(existingChar.Description ?? "").Equals(extractedChar.Description ?? "", StringComparison.Ordinal);
+
+                        if (roleChanged || descriptionChanged)
                         {
-                            // Description changed - update it and track the chapter
-                            existingChar.Description = extractedChar.Description;
+                            // Update changed fields and track the chapter
+                            if (roleChanged)
+                            {
+                                existingChar.Role = extractedChar.Role;
+                            }
+                            if (descriptionChanged)
+                            {
+                                existingChar.Description = extractedChar.Description;
+                            }
                             existingChar.LastChangedInChapter = i + 1;  // Chapter numbers are 1-based
-                            Console.WriteLine($"  Character '{existingChar.Name}' appearance updated in chapter {i + 1}");
+                            Console.WriteLine($"  Character '{existingChar.Name}' updated in chapter {i + 1}");
                         }
                         // Keep existingChar.IntroducedInChapter as is
                     }
@@ -265,27 +329,65 @@ public class OllamaService
                     }
                 }
 
-                Console.WriteLine($"[Pass 1] Chapter {i + 1} complete. Total characters known: {allCharacters.Count}");
+                Console.WriteLine($"[ExtractCharacters] Chapter {i + 1} complete. Total characters known: {allCharacters.Count}");
 
                 // Unload model to ensure clean context for next chapter extraction
                 await UnloadModelAsync(modelName);
             }
 
-            Console.WriteLine($"\n[Pass 1] Complete! Total unique characters: {allCharacters.Count}\n");
+            Console.WriteLine($"\n[ExtractCharacters] Complete! Total unique characters: {allCharacters.Count}\n");
 
-            // =================================================================
-            // PASS 2: SUMMARIZATION OF RAW CHAPTERS
-            // =================================================================
-            Console.WriteLine("\n--- PASS 2: SUMMARIZING CHAPTERS ---\n");
+            return allCharacters;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[ExtractCharacters] Error: {ex.Message}");
+            throw;
+        }
+    }
+
+    public async Task<List<string>> GenerateSummariesAsync(
+        string modelName,
+        double temperature,
+        int contextWindowSize,
+        List<string> chapterContents,
+        string chapterMarker,
+        Action<string, List<string>>? onProgressUpdate = null)
+    {
+        try
+        {
+            Console.WriteLine($"\n{new string('=', 60)}");
+            Console.WriteLine("GENERATING CHAPTER SUMMARIES");
+            Console.WriteLine($"Total chapters: {chapterContents.Count}");
+            Console.WriteLine($"{new string('=', 60)}\n");
+
+            // Validate chapter lengths against context window size
+            var maxChapterLength = GetMaxChapterLength(contextWindowSize);
+            for (int i = 0; i < chapterContents.Count; i++)
+            {
+                if (chapterContents[i] == null)
+                {
+                    Console.WriteLine($"⚠️  WARNING: Chapter {i + 1} is null, skipping validation");
+                    continue;
+                }
+
+                var chapterLength = chapterContents[i].Length;
+                if (chapterLength > maxChapterLength)
+                {
+                    var chapterNum = i + 1;
+                    Console.WriteLine($"⚠️  WARNING: Chapter {chapterNum} has {chapterLength} characters, exceeds maximum of {maxChapterLength} for context {contextWindowSize}");
+                    Console.WriteLine("   This may cause truncation or processing issues. Consider splitting this chapter or increasing context size.");
+                }
+            }
 
             var allSummaries = new List<string>();
 
             for (int i = 0; i < chapterContents.Count; i++)
             {
                 // Notify UI before starting
-                var statusMsg = $"Getting Summary Chapter {i + 1}/{chapterContents.Count}";
-                Console.WriteLine($"[Pass 2] {statusMsg}");
-                onProgressUpdate?.Invoke(statusMsg, new List<CharacterInfo>(allCharacters), new List<string>(allSummaries));
+                var statusMsg = $"Generating summary for chapter {i + 1}/{chapterContents.Count}";
+                Console.WriteLine($"[GenerateSummaries] {statusMsg}");
+                onProgressUpdate?.Invoke(statusMsg, new List<string>(allSummaries));
 
                 var request = new ChapterProcessingRequest
                 {
@@ -300,33 +402,23 @@ public class OllamaService
                 var summary = await SummarizeRawChapterAsync(chapterContents[i], request);
                 allSummaries.Add(summary);
 
-                Console.WriteLine($"[Pass 2] Chapter {i + 1} summary: {summary.Substring(0, Math.Min(100, summary.Length))}...");
+                Console.WriteLine($"[GenerateSummaries] Chapter {i + 1} summary: {summary.Substring(0, Math.Min(100, summary.Length))}...");
 
                 // Unload model to ensure clean context for next chapter summary
                 await UnloadModelAsync(modelName);
             }
 
-            Console.WriteLine($"\n[Pass 2] Complete! Total summaries: {allSummaries.Count}\n");
+            Console.WriteLine($"\n[GenerateSummaries] Complete! Total summaries: {allSummaries.Count}\n");
 
-            // Unload model for clean state
-            await UnloadModelAsync(modelName);
-
-            Console.WriteLine($"\n{new string('=', 60)}");
-            Console.WriteLine("PREPARATION COMPLETE!");
-            Console.WriteLine($"{new string('=', 60)}\n");
-
-            return (allCharacters, allSummaries);
+            return allSummaries;
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"Error in chapter preparation: {ex.Message}");
-
-            // Try to unload model on error
-            try { await UnloadModelAsync(modelName); } catch { }
-
+            Console.WriteLine($"[GenerateSummaries] Error: {ex.Message}");
             throw;
         }
     }
+
 
     public async Task<List<string>> ReviseChaptersAsync(
         string modelName,
@@ -346,6 +438,25 @@ public class OllamaService
             Console.WriteLine("REVISING CHAPTERS USING PREPARED DATA");
             Console.WriteLine($"Total chapters: {chapterContents.Count}");
             Console.WriteLine($"{new string('=', 60)}\n");
+
+            // Validate chapter lengths against context window size
+            var maxChapterLength = GetMaxChapterLength(contextWindowSize);
+            for (int i = 0; i < chapterContents.Count; i++)
+            {
+                if (chapterContents[i] == null)
+                {
+                    Console.WriteLine($"⚠️  WARNING: Chapter {i + 1} is null, skipping validation");
+                    continue;
+                }
+
+                var chapterLength = chapterContents[i].Length;
+                if (chapterLength > maxChapterLength)
+                {
+                    var chapterNum = i + 1;
+                    Console.WriteLine($"⚠️  WARNING: Chapter {chapterNum} has {chapterLength} characters, exceeds maximum of {maxChapterLength} for context {contextWindowSize}");
+                    Console.WriteLine("   This may cause truncation or processing issues. Consider splitting this chapter or increasing context size.");
+                }
+            }
 
             for (int i = 0; i < chapterContents.Count; i++)
             {
@@ -384,8 +495,8 @@ public class OllamaService
                 {
                     attempt++;
                     revisedChapter = await ReviseChapterAsync(request, availableCharacters, previousSummaries);
-
-                    if (revisedChapter.Length >= 200)
+                    await UnloadModelAsync(modelName);
+                    if (revisedChapter.Length >= 200 && revisedChapter.Length>request.ChapterContent.Length/2 && revisedChapter.Length<request.ChapterContent.Length*2)
                     {
                         // Success - chapter is long enough
                         break;
@@ -406,7 +517,7 @@ public class OllamaService
 
                 // Notify UI of progress with the revised chapter
                 onChapterRevised?.Invoke(revisedChapter, currentChapter, chapterContents.Count);
-                await UnloadModelAsync(modelName);
+               
             }
 
             Console.WriteLine($"\n{new string('=', 60)}");
@@ -431,49 +542,49 @@ public class OllamaService
 
     // Keep the single chapter method for backward compatibility (if needed)
     [Obsolete("Use ProcessAllChaptersAsync for better consistency")]
-    public async Task<ChapterProcessingResponse> ProcessChapterAsync(ChapterProcessingRequest request)
-    {
-        try
-        {
-            // Step 1: Revise the chapter using context from PREVIOUS chapters (known characters and summaries)
-            var revisedChapter = await ReviseChapterAsync(request, request.KnownCharacters, request.PreviousChapterSummaries);
-
-            // Step 2: Extract/Update characters from the REVISED chapter
-            var updatedCharacters = await ExtractCharactersFromRevisedAsync(revisedChapter, request);
-
-            // Step 3: Create summary of the REVISED chapter for future chapters
-            var chapterSummary = await SummarizeRevisedChapterAsync(revisedChapter, request);
-
-            // Step 4: Unload the model to ensure clean state for next chapter
-            Console.WriteLine("[ProcessChapter] Unloading model to ensure clean state for next chapter...");
-            await UnloadModelAsync(request.ModelName);
-
-            return new ChapterProcessingResponse
-            {
-                RevisedChapter = revisedChapter,
-                UpdatedCharacters = updatedCharacters,
-                ChapterSummary = chapterSummary
-            };
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"Error processing chapter with Ollama: {ex.Message}");
-
-            // Try to unload model even on error
-            try
-            {
-                await UnloadModelAsync(request.ModelName);
-            }
-            catch { }
-
-            return new ChapterProcessingResponse
-            {
-                RevisedChapter = $"Error: {ex.Message}",
-                UpdatedCharacters = request.KnownCharacters,
-                ChapterSummary = "Error processing chapter"
-            };
-        }
-    }
+    // public async Task<ChapterProcessingResponse> ProcessChapterAsync(ChapterProcessingRequest request)
+    // {
+    //     try
+    //     {
+    //         // Step 1: Revise the chapter using context from PREVIOUS chapters (known characters and summaries)
+    //         var revisedChapter = await ReviseChapterAsync(request, request.KnownCharacters, request.PreviousChapterSummaries);
+    //
+    //         // Step 2: Extract/Update characters from the REVISED chapter
+    //         var updatedCharacters = await ExtractCharactersFromRevisedAsync(revisedChapter, request);
+    //
+    //         // Step 3: Create summary of the REVISED chapter for future chapters
+    //         var chapterSummary = await SummarizeRevisedChapterAsync(revisedChapter, request);
+    //
+    //         // Step 4: Unload the model to ensure clean state for next chapter
+    //         Console.WriteLine("[ProcessChapter] Unloading model to ensure clean state for next chapter...");
+    //         await UnloadModelAsync(request.ModelName);
+    //
+    //         return new ChapterProcessingResponse
+    //         {
+    //             RevisedChapter = revisedChapter,
+    //             UpdatedCharacters = updatedCharacters,
+    //             ChapterSummary = chapterSummary
+    //         };
+    //     }
+    //     catch (Exception ex)
+    //     {
+    //         Console.WriteLine($"Error processing chapter with Ollama: {ex.Message}");
+    //
+    //         // Try to unload model even on error
+    //         try
+    //         {
+    //             await UnloadModelAsync(request.ModelName);
+    //         }
+    //         catch { }
+    //
+    //         return new ChapterProcessingResponse
+    //         {
+    //             RevisedChapter = $"Error: {ex.Message}",
+    //             UpdatedCharacters = request.KnownCharacters,
+    //             ChapterSummary = "Error processing chapter"
+    //         };
+    //     }
+    // }
 
     private async Task<List<CharacterInfo>> ExtractCharactersFromRawAsync(string rawChapter, ChapterProcessingRequest request)
     {
@@ -492,6 +603,7 @@ public class OllamaService
 8. IGNORE settings, locations, and objects - ONLY track living characters
 9. Generic groups (""Goblins"", ""Orcs"", ""Tieflings"") are NOT individual characters - skip them
 10. NEVER return empty descriptions - if you have no appearance info, use existing description
+11. Keep descriptions CONCISE - maximum 250 characters per description
 
 WHAT TO INCLUDE IN DESCRIPTION (APPEARANCE ONLY):
 - Gender (male, female, non-binary, etc.)
@@ -585,89 +697,6 @@ Return as JSON object with a 'characters' array. DO NOT include this example str
         }
     }
 
-    private async Task<List<CharacterInfo>> ExtractCharactersFromRevisedAsync(string revisedChapter, ChapterProcessingRequest request)
-    {
-        Console.WriteLine("[REQUEST TYPE] Character Extraction");
-
-        var systemPrompt = @"You are a character analyst for stories. Your task is to identify all characters in a chapter and track them with name, role, and description.
-
-!!!!! ABSOLUTELY CRITICAL RULES !!!!!
-1. NEVER include role or chapter info in the 'name' field - names ONLY
-2. NEVER create duplicate characters - ALWAYS match existing ones by name and role
-3. IGNORE settings, locations, and objects - ONLY track living characters
-4. Generic groups (""Goblins"", ""Orcs"", ""Tieflings"") are NOT individual characters - skip them
-5. NEVER return empty descriptions - if you have no info, use existing description
-6. ALL existing information MUST be preserved - you can only ADD, never remove
-
-INSTRUCTIONS:
-- Review the provided chapter text
-- Identify all individual named characters (NOT groups, NOT locations)
-- For each character, provide:
-  * name: Character's actual name if known, otherwise ""Unknown""
-  * role: Their role (Protagonist, Antagonist, Narrator, Mentor, Guard, etc.)
-  * description: Physical appearance, traits, and important details
-- If a character already exists in the known list, UPDATE them (don't create duplicate)
-- If ""Unknown"" character's name is revealed, update the name but keep role and description
-
-WHAT NOT TO INCLUDE:
-- ❌ Settings/locations (""Baldur's Gate"", ""Tavern"", ""Inn"")
-- ❌ Generic groups (""Goblins"", ""Orcs"", ""Soldiers"")
-- ❌ Role in name field (WRONG: ""Astarion (Rogue)"", CORRECT: name=""Astarion"", role=""Rogue"")
-
-MATCHING EXISTING CHARACTERS:
-1. Compare by name (exact match, case-insensitive)
-2. If name matches, UPDATE existing entry - DO NOT create duplicate
-3. Only create NEW entry if you're certain it's a different character
-4. When in doubt, UPDATE existing rather than create new
-
-Return as JSON object with a 'characters' array. DO NOT include this example in your response:
-{
-  ""characters"": [
-    {
-      ""name"": ""Elvira"",
-      ""role"": ""Protagonist"",
-      ""description"": ""Female, brave and resourceful, mysterious past""
-    },
-    {
-      ""name"": ""Lord Malachar"",
-      ""role"": ""Antagonist"",
-      ""description"": ""Dark sorcerer, seeks ancient artifact""
-    }
-  ]
-}";
-
-        var userPrompt = new StringBuilder();
-
-        if (request.KnownCharacters.Count > 0)
-        {
-            userPrompt.AppendLine("KNOWN CHARACTERS FROM PREVIOUS CHAPTERS:");
-            foreach (var character in request.KnownCharacters)
-            {
-                userPrompt.AppendLine($"- {character.Name} ({character.Role}):");
-                userPrompt.AppendLine($"  Description: {character.Description}");
-            }
-            userPrompt.AppendLine();
-        }
-
-        userPrompt.AppendLine("REVISED CHAPTER TO ANALYZE:");
-        userPrompt.AppendLine(revisedChapter);
-        userPrompt.AppendLine();
-        userPrompt.AppendLine("Provide the updated character list as JSON object with 'characters' array:");
-
-        var response = await CallOllamaAsync(request.ModelName, systemPrompt, userPrompt.ToString(), 0.3, request.ContextWindowSize, jsonFormat: true);
-
-        try
-        {
-            var wrapper = JsonSerializer.Deserialize<CharacterListWrapper>(response);
-            return wrapper?.Characters ?? request.KnownCharacters;
-        }
-        catch (Exception e)
-        {
-            Console.WriteLine($"[ExtractCharactersFromRevised] Deserialization error: {e.Message}");
-            Console.WriteLine($"[ExtractCharactersFromRevised] Response was: {response}");
-            return request.KnownCharacters;
-        }
-    }
 
     private async Task<string> SummarizeRawChapterAsync(string rawChapter, ChapterProcessingRequest request)
     {
@@ -691,27 +720,6 @@ INSTRUCTIONS:
         return await CallOllamaAsync(request.ModelName, systemPrompt, userPrompt.ToString(), 0.5, request.ContextWindowSize);
     }
 
-    private async Task<string> SummarizeRevisedChapterAsync(string revisedChapter, ChapterProcessingRequest request)
-    {
-        Console.WriteLine("[REQUEST TYPE] Chapter Summary (Revised)");
-
-        var systemPrompt = @"You are a chapter summarizer for stories. Your task is to create a brief, concise summary of a chapter.
-
-INSTRUCTIONS:
-- Read the provided chapter
-- Create a 2-3 sentence summary covering the main events and developments
-- Focus on plot progression, character actions, and key revelations
-- Keep it concise but informative
-- Return ONLY the summary text, no JSON, no additional formatting";
-
-        var userPrompt = new StringBuilder();
-        userPrompt.AppendLine("REVISED CHAPTER TO SUMMARIZE:");
-        userPrompt.AppendLine(revisedChapter);
-        userPrompt.AppendLine();
-        userPrompt.AppendLine("Provide a brief summary:");
-
-        return await CallOllamaAsync(request.ModelName, systemPrompt, userPrompt.ToString(), 0.5, request.ContextWindowSize);
-    }
 
     private async Task<string> ReviseChapterAsync(ChapterProcessingRequest request, List<CharacterInfo> characters, List<string> previousChapterSummaries)
     {
@@ -724,6 +732,11 @@ INSTRUCTIONS:
         systemPrompt.AppendLine("- You assist the writer by applying specific revisions and improvements to their chapter");
         systemPrompt.AppendLine("- You maintain consistency with the established story, characters, and tone");
         systemPrompt.AppendLine("- You preserve the author's voice and style while implementing requested changes");
+        systemPrompt.AppendLine("- You rephrase sentences if this improves it or avoids repetition");
+        systemPrompt.AppendLine("IMPORTANT: Rewrite the ENTIRE following chapter from start to finish. ");
+        
+        
+        
         systemPrompt.AppendLine();
         systemPrompt.AppendLine("CONTEXT PROVIDED TO HELP YOU:");
         systemPrompt.AppendLine("- Character List: Ensure consistency with established character traits and relationships");
@@ -788,7 +801,24 @@ INSTRUCTIONS:
                 Console.WriteLine($"[REQUEST TYPE] Continuation #{continuationCount}");
             }
 
-            var (partialResponse, done) = await CallOllamaSingleAsync(model, systemPrompt, userPrompt, temperature, contextWindowSize, jsonFormat);
+            int maxRetries = 15;
+            int trycount = 1;
+            string partialResponse = string.Empty;
+            bool done = true;
+            while (trycount < maxRetries)
+            {
+                 (partialResponse, done) = await CallOllamaSingleAsync(model, systemPrompt, userPrompt, temperature,
+                    contextWindowSize, jsonFormat);
+                if (!string.IsNullOrWhiteSpace(partialResponse)) break;
+                trycount++;
+                Thread.Sleep(TimeSpan.FromSeconds(1));
+            }
+
+            if (string.IsNullOrWhiteSpace(partialResponse))
+            {
+
+                Console.WriteLine("oh-oh!");
+            }
 
             Console.WriteLine($"[CallOllama] Received response - Length: {partialResponse.Length} chars, Done flag: {done}");
 
@@ -829,7 +859,7 @@ INSTRUCTIONS:
 
     private async Task<(string response, bool done)> CallOllamaSingleAsync(string model, string systemPrompt, string userPrompt, double temperature, int contextWindowSize = 4096, bool jsonFormat = false)
     {
-        var httpClient = _httpClientFactory.CreateClient();
+         var httpClient = _httpClientFactory.CreateClient();
         httpClient.Timeout = TimeSpan.FromMinutes(30);  // Increased to 30 minutes for long requests
 
         object ollamaRequest;
@@ -910,7 +940,8 @@ INSTRUCTIONS:
         var rawResponse = fullResponse.ToString();
         if (string.IsNullOrEmpty(rawResponse))
         {
-            throw new Exception("Empty response from Ollama");
+            return (string.Empty, true);
+            //throw new Exception("Empty response from Ollama");
         }
 
         // Log detailed response info for debugging
@@ -994,7 +1025,7 @@ public class SaveData
 
 public class ModelInfo
 {
-    public int MaxContext { get; set; } = 4096;
+    public int MaxContext { get; set; } = 0;  // 0 = not detected, makes failures obvious
     public double ModelSizeInBillions { get; set; } = 7.0;
     public double QuantizationBits { get; set; } = 4.5;
 }

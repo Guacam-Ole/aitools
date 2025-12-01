@@ -80,7 +80,10 @@ public class ComfyUIService
                 // Get the image URL
                 var imageUrl = $"{ComfyUIBaseUrl}/view?filename={imageFilename}&type=output";
                 Console.WriteLine($"[ComfyUI] Image generated: {imageUrl}");
-                return imageUrl;
+
+                // Download the image and convert to base64
+                var base64Image = await DownloadImageAsBase64(imageUrl);
+                return base64Image;
             }
 
             return null;
@@ -141,6 +144,27 @@ public class ComfyUIService
 
         Console.WriteLine("[ComfyUI] Timeout waiting for image generation");
         return null;
+    }
+
+    private async Task<string?> DownloadImageAsBase64(string imageUrl)
+    {
+        try
+        {
+            var httpClient = _httpClientFactory.CreateClient();
+            var imageBytes = await httpClient.GetByteArrayAsync(imageUrl);
+            var base64String = Convert.ToBase64String(imageBytes);
+
+            // Return as data URL that can be used directly in img src
+            var dataUrl = $"data:image/png;base64,{base64String}";
+
+            Console.WriteLine($"[ComfyUI] Image converted to base64 ({imageBytes.Length} bytes)");
+            return dataUrl;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[ComfyUI] Error downloading image: {ex.Message}");
+            return null;
+        }
     }
 }
 

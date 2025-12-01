@@ -270,16 +270,36 @@
 
     <div class="row">
         <div class="col-md-12">
-            <button class="btn btn-info me-2" @onclick="PrepareChapters" disabled="@isProcessing">
-                @if (isProcessing && !isPrepared)
+            <button class="btn btn-info me-2" @onclick="ExtractCharacters" disabled="@isProcessing">
+                @if (isProcessing && !areCharactersExtracted)
                 {
-                    <span>Preparing...</span>
+                    <span>Extracting Characters...</span>
                 }
                 else
                 {
-                    <span>Prepare (Extract Characters & Summaries)</span>
+                    <span>Extract Characters</span>
                 }
             </button>
+            @if (areCharactersExtracted)
+            {
+                <span class="text-success me-2">✓</span>
+            }
+
+            <button class="btn btn-info me-2" @onclick="GenerateSummaries" disabled="@isProcessing">
+                @if (isProcessing && areCharactersExtracted && !areSummariesGenerated)
+                {
+                    <span>Generating Summaries...</span>
+                }
+                else
+                {
+                    <span>Generate Summaries</span>
+                }
+            </button>
+            @if (areSummariesGenerated)
+            {
+                <span class="text-success me-2">✓</span>
+            }
+
             <button class="btn btn-primary" @onclick="ApplyRuleset" disabled="@(isProcessing || !isPrepared)">
                 @if (isProcessing && isPrepared)
                 {
@@ -290,10 +310,10 @@
                     <span>Apply Ruleset (Revise Chapters)</span>
                 }
             </button>
-            @if (isPrepared)
-            {
-                <span class="ms-3 text-success">✓ Prepared</span>
-            }
+
+            <button class="btn btn-success ms-2" @onclick="ShowDiff" disabled="@(string.IsNullOrWhiteSpace(beforeText) || string.IsNullOrWhiteSpace(afterText))">
+                <span>Show Diff</span>
+            </button>
         </div>
     </div>
 </div>
@@ -320,7 +340,9 @@ Focus on:
     private List<string> models = new();
     private bool isLoadingModels = true;
     private bool isProcessing = false;
-    private bool isPrepared = false;
+    private bool areCharactersExtracted = false;
+    private bool areSummariesGenerated = false;
+    private bool isPrepared => areCharactersExtracted && areSummariesGenerated;  // Both must be complete
 
     // Accordion state
     private bool isBeforeOpen = true;
@@ -432,7 +454,7 @@ Focus on:
             var file = e.File;
             if (file == null) return;
 
-            using var stream = file.OpenReadStream(maxAllowedSize: 10 * 1024 * 1024); // 10MB max
+            using var stream = file.OpenReadStream(maxAllowedSize: 100 * 1024 * 1024); // 100MB max (for base64 images)
             using var reader = new StreamReader(stream);
             var json = await reader.ReadToEndAsync();
 
@@ -460,7 +482,7 @@ Focus on:
             }
 
             // Restore preparation state if we have the data
-            if (knownCharacters.Count > 0 && chapterSummaries.Count > 0 && !string.IsNullOrWhiteSpace(beforeText))
+            if (!string.IsNullOrWhiteSpace(beforeText))
             {
                 // Split chapters to restore preparedChapters
                 var chapters = SplitIntoChapters(beforeText, chapter);
@@ -468,7 +490,10 @@ Focus on:
                 if (chapters.Count > 0)
                 {
                     preparedChapters = chapters;
-                    isPrepared = true;
+
+                    // Set extraction/generation flags based on loaded data
+                    areCharactersExtracted = knownCharacters.Count > 0;
+                    areSummariesGenerated = chapterSummaries.Count > 0;
                 }
             }
 
@@ -482,20 +507,27 @@ Focus on:
             {
                 statusText = $"Project loaded successfully! Model: {selectedModel}, Characters: {knownCharacters.Count}, Summaries: {chapterSummaries.Count}. Ready to apply ruleset.";
             }
-            else if (knownCharacters.Count > 0 && chapterSummaries.Count > 0 && !string.IsNullOrWhiteSpace(beforeText))
+            else if (areCharactersExtracted)
             {
-                statusText = $"Project loaded successfully! Model: {selectedModel}, Characters: {knownCharacters.Count}, Summaries: {chapterSummaries.Count}. Click 'Prepare' to rebuild chapter states before applying ruleset.";
+                statusText = $"Project loaded successfully! Model: {selectedModel}, Characters: {knownCharacters.Count}. Generate summaries to proceed.";
             }
             else
             {
-                statusText = $"Project loaded successfully! Model: {selectedModel}, Characters: {knownCharacters.Count}, Summaries: {chapterSummaries.Count}.";
+                statusText = $"Project loaded successfully! Model: {selectedModel}. Extract characters and generate summaries to proceed.";
             }
 
             StateHasChanged();
         }
         catch (Exception ex)
         {
-            statusText = $"Error loading file: {ex.Message}";
+            Console.WriteLine($"[LoadFile] Exception occurred: {ex.GetType().Name}");
+            Console.WriteLine($"[LoadFile] Message: {ex.Message}");
+            Console.WriteLine($"[LoadFile] Stack trace: {ex.StackTrace}");
+            if (ex.InnerException != null)
+            {
+                Console.WriteLine($"[LoadFile] Inner exception: {ex.InnerException.Message}");
+            }
+            statusText = $"Error loading file: {ex.Message} (see console for details)";
         }
     }
 
@@ -532,9 +564,9 @@ Focus on:
         }
     }
 
-    private async Task PrepareChapters()
+    private async Task ExtractCharacters()
     {
-        Console.WriteLine($"PrepareChapters called - beforeText length: {beforeText?.Length ?? 0}");
+        Console.WriteLine($"ExtractCharacters called - beforeText length: {beforeText?.Length ?? 0}");
 
         if (string.IsNullOrWhiteSpace(selectedModel))
         {
@@ -557,7 +589,7 @@ Focus on:
         try
         {
             isProcessing = true;
-            isPrepared = false;
+            areCharactersExtracted = false;
             afterText = "";
             statusText = "";
             StateHasChanged();
@@ -574,43 +606,138 @@ Focus on:
 
             // Reset tracking lists for new processing run
             knownCharacters.Clear();
-            chapterSummaries.Clear();
 
-            statusText = $"Preparing {chapters.Count} chapters (extracting characters and creating summaries)...";
+            statusText = $"Extracting characters from {chapters.Count} chapters...";
             StateHasChanged();
 
-            // Prepare chapters (Pass 1 & 2: Character extraction and summarization)
-            var (characters, summaries) = await OllamaService.PrepareChaptersAsync(
+            // Extract characters
+            var characters = await OllamaService.ExtractCharactersAsync(
                 selectedModel,
                 temperature,
                 contextWindowSize,
                 chapters,
                 chapter,
                 // Progress callback to update UI in real-time
-                (status, chars, sums) =>
+                (status, chars) =>
                 {
                     statusText = status;
                     knownCharacters = chars;
+                    StateHasChanged();
+                }
+            );
+
+            // Store the prepared chapters for later use
+            preparedChapters = chapters;
+
+            // Update UI with final results
+            knownCharacters = characters;
+            isCharactersOpen = true;
+
+            areCharactersExtracted = true;
+            statusText = $"Character extraction complete! Total characters found: {knownCharacters.Count}.";
+            StateHasChanged();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[ExtractCharacters] Exception occurred: {ex.GetType().Name}");
+            Console.WriteLine($"[ExtractCharacters] Message: {ex.Message}");
+            Console.WriteLine($"[ExtractCharacters] Stack trace: {ex.StackTrace}");
+            if (ex.InnerException != null)
+            {
+                Console.WriteLine($"[ExtractCharacters] Inner exception: {ex.InnerException.Message}");
+            }
+            statusText = $"Error: {ex.Message} (see console for details)";
+            areCharactersExtracted = false;
+        }
+        finally
+        {
+            isProcessing = false;
+        }
+    }
+
+    private async Task GenerateSummaries()
+    {
+        Console.WriteLine($"GenerateSummaries called - beforeText length: {beforeText?.Length ?? 0}");
+
+        if (string.IsNullOrWhiteSpace(selectedModel))
+        {
+            statusText = "Error: Please select a model first.";
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(beforeText))
+        {
+            statusText = $"Error: Please provide text to process. Current length: {beforeText?.Length ?? 0}";
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(chapter))
+        {
+            statusText = "Error: Please provide a chapter marker.";
+            return;
+        }
+
+        try
+        {
+            isProcessing = true;
+            areSummariesGenerated = false;
+            statusText = "";
+            StateHasChanged();
+
+            // Split the story into chapters
+            var chapters = SplitIntoChapters(beforeText, chapter);
+
+            if (chapters.Count == 0)
+            {
+                statusText = $"Error: No chapters found with marker '{chapter}'";
+                isProcessing = false;
+                return;
+            }
+
+            // Reset summaries for new processing run
+            chapterSummaries.Clear();
+
+            statusText = $"Generating summaries for {chapters.Count} chapters...";
+            StateHasChanged();
+
+            // Generate summaries
+            var summaries = await OllamaService.GenerateSummariesAsync(
+                selectedModel,
+                temperature,
+                contextWindowSize,
+                chapters,
+                chapter,
+                // Progress callback to update UI in real-time
+                (status, sums) =>
+                {
+                    statusText = status;
                     chapterSummaries = sums;
                     StateHasChanged();
                 }
             );
 
-            // Store the prepared chapters for later revision
+            // Store the prepared chapters for later use
             preparedChapters = chapters;
 
             // Update UI with final results
-            knownCharacters = characters;
             chapterSummaries = summaries;
+            isSummaryOpen = true;
 
-            isPrepared = true;
-            statusText = $"Preparation complete! Total chapters: {chapters.Count}, Characters found: {knownCharacters.Count}. Click 'Apply Ruleset' to revise chapters.";
+            areSummariesGenerated = true;
+            statusText = $"Summary generation complete! Total summaries: {chapterSummaries.Count}. Ready to apply ruleset.";
             StateHasChanged();
         }
         catch (Exception ex)
         {
-            statusText = $"Error: {ex.Message}";
-            isPrepared = false;
+            Console.WriteLine($"[GenerateSummaries] Exception occurred: {ex.GetType().Name}");
+            Console.WriteLine($"[GenerateSummaries] Message: {ex.Message}");
+            Console.WriteLine($"[GenerateSummaries] Stack trace: {ex.StackTrace}");
+            if (ex.InnerException != null)
+            {
+                Console.WriteLine($"[GenerateSummaries] Inner exception: {ex.InnerException.Message}");
+            }
+            statusText = $"Error: {ex.Message} (see console for details)";
+            areSummariesGenerated = false;
         }
         finally
         {
@@ -671,12 +798,33 @@ Focus on:
         }
         catch (Exception ex)
         {
-            statusText = $"Error: {ex.Message}";
+            Console.WriteLine($"[ApplyRuleset] Exception occurred: {ex.GetType().Name}");
+            Console.WriteLine($"[ApplyRuleset] Message: {ex.Message}");
+            Console.WriteLine($"[ApplyRuleset] Stack trace: {ex.StackTrace}");
+            if (ex.InnerException != null)
+            {
+                Console.WriteLine($"[ApplyRuleset] Inner exception: {ex.InnerException.Message}");
+            }
+            statusText = $"Error: {ex.Message} (see console for details)";
         }
         finally
         {
             isProcessing = false;
         }
+    }
+
+    private async Task ShowDiff()
+    {
+        Console.WriteLine($"[ShowDiff] Storing texts - Before: {beforeText.Length} chars, After: {afterText.Length} chars");
+
+        // Store texts in localStorage so the new window can access them
+        await JSRuntime.InvokeVoidAsync("localStorage.setItem", "diffBeforeText", beforeText);
+        await JSRuntime.InvokeVoidAsync("localStorage.setItem", "diffAfterText", afterText);
+
+        Console.WriteLine($"[ShowDiff] Texts stored in localStorage, opening window...");
+
+        // Open the diff page in a new window using JavaScript
+        await JSRuntime.InvokeVoidAsync("open", "/diff", "_blank");
     }
 
     // Character editing methods
@@ -777,7 +925,14 @@ Focus on:
         }
         catch (Exception ex)
         {
-            statusText = $"Error generating portrait: {ex.Message}";
+            Console.WriteLine($"[GenerateCharacterImage] Exception occurred: {ex.GetType().Name}");
+            Console.WriteLine($"[GenerateCharacterImage] Message: {ex.Message}");
+            Console.WriteLine($"[GenerateCharacterImage] Stack trace: {ex.StackTrace}");
+            if (ex.InnerException != null)
+            {
+                Console.WriteLine($"[GenerateCharacterImage] Inner exception: {ex.InnerException.Message}");
+            }
+            statusText = $"Error generating portrait: {ex.Message} (see console for details)";
         }
         finally
         {
