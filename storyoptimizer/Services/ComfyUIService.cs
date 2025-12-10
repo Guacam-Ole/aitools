@@ -2,17 +2,20 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
+using Microsoft.Extensions.Configuration;
 
 namespace StoryOptimizer.Services;
 
 public class ComfyUIService
 {
     private readonly IHttpClientFactory _httpClientFactory;
-    private const string ComfyUIBaseUrl = "http://mediacenter:8188";
+    private readonly string _comfyUIBaseUrl;
 
-    public ComfyUIService(IHttpClientFactory httpClientFactory)
+    public ComfyUIService(IHttpClientFactory httpClientFactory, IConfiguration configuration)
     {
         _httpClientFactory = httpClientFactory;
+        _comfyUIBaseUrl = configuration["Services:ComfyUIBaseUrl"] ?? "http://localhost:8188";
+        Console.WriteLine($"[ComfyUIService] Using ComfyUI base URL: {_comfyUIBaseUrl}");
     }
 
     public async Task<string?> GenerateCharacterPortrait(string characterDescription, string workflowPath)
@@ -51,8 +54,8 @@ public class ComfyUIService
                 Encoding.UTF8,
                 "application/json");
 
-            Console.WriteLine($"[ComfyUI] Sending request to {ComfyUIBaseUrl}/prompt");
-            var response = await httpClient.PostAsync($"{ComfyUIBaseUrl}/prompt", content);
+            Console.WriteLine($"[ComfyUI] Sending request to {_comfyUIBaseUrl}/prompt");
+            var response = await httpClient.PostAsync($"{_comfyUIBaseUrl}/prompt", content);
 
             var responseContent = await response.Content.ReadAsStringAsync();
 
@@ -78,7 +81,7 @@ public class ComfyUIService
             if (imageFilename != null)
             {
                 // Get the image URL
-                var imageUrl = $"{ComfyUIBaseUrl}/view?filename={imageFilename}&type=output";
+                var imageUrl = $"{_comfyUIBaseUrl}/view?filename={imageFilename}&type=output";
                 Console.WriteLine($"[ComfyUI] Image generated: {imageUrl}");
 
                 // Download the image and convert to base64
@@ -106,7 +109,7 @@ public class ComfyUIService
             try
             {
                 // Check history for this prompt
-                var historyResponse = await httpClient.GetAsync($"{ComfyUIBaseUrl}/history/{promptId}");
+                var historyResponse = await httpClient.GetAsync($"{_comfyUIBaseUrl}/history/{promptId}");
                 if (historyResponse.IsSuccessStatusCode)
                 {
                     var historyJson = await historyResponse.Content.ReadAsStringAsync();

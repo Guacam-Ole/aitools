@@ -1,6 +1,7 @@
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using Microsoft.Extensions.Configuration;
 using StoryOptimizer.Models;
 
 namespace StoryOptimizer.Services;
@@ -8,11 +9,13 @@ namespace StoryOptimizer.Services;
 public class OllamaApiService
 {
     private readonly IHttpClientFactory _httpClientFactory;
-    private const string OllamaBaseUrl = "http://mediacenter:11434";
+    private readonly string _ollamaBaseUrl;
 
-    public OllamaApiService(IHttpClientFactory httpClientFactory)
+    public OllamaApiService(IHttpClientFactory httpClientFactory, IConfiguration configuration)
     {
         _httpClientFactory = httpClientFactory;
+        _ollamaBaseUrl = configuration["Services:OllamaBaseUrl"] ?? "http://localhost:11434";
+        Console.WriteLine($"[OllamaApiService] Using Ollama base URL: {_ollamaBaseUrl}");
     }
 
     public async Task<List<string>> GetAvailableModelsAsync()
@@ -20,7 +23,7 @@ public class OllamaApiService
         try
         {
             var httpClient = _httpClientFactory.CreateClient();
-            var response = await httpClient.GetFromJsonAsync<OllamaModelsResponse>($"{OllamaBaseUrl}/api/tags");
+            var response = await httpClient.GetFromJsonAsync<OllamaModelsResponse>($"{_ollamaBaseUrl}/api/tags");
 
             return response?.Models?.Select(m => m.Name).ToList() ?? new List<string>();
         }
@@ -40,7 +43,7 @@ public class OllamaApiService
             var jsonContent = JsonSerializer.Serialize(requestBody);
             var content = new StringContent(jsonContent, Encoding.UTF8, "application/json");
 
-            var response = await httpClient.PostAsync($"{OllamaBaseUrl}/api/show", content);
+            var response = await httpClient.PostAsync($"{_ollamaBaseUrl}/api/show", content);
             response.EnsureSuccessStatusCode();
 
             var responseJson = await response.Content.ReadAsStringAsync();
@@ -201,7 +204,7 @@ public class OllamaApiService
             var jsonContent = JsonSerializer.Serialize(unloadRequest);
             var content = new StringContent(jsonContent, Encoding.UTF8, "application/json");
 
-            var response = await httpClient.PostAsync($"{OllamaBaseUrl}/api/generate", content);
+            var response = await httpClient.PostAsync($"{_ollamaBaseUrl}/api/generate", content);
             response.EnsureSuccessStatusCode();
 
             Console.WriteLine($"[UnloadModel] Model '{modelName}' unloaded successfully");
@@ -333,7 +336,7 @@ public class OllamaApiService
         var jsonContent = JsonSerializer.Serialize(ollamaRequest);
         var content = new StringContent(jsonContent, Encoding.UTF8, "application/json");
 
-        var response = await httpClient.PostAsync($"{OllamaBaseUrl}/api/generate", content);
+        var response = await httpClient.PostAsync($"{_ollamaBaseUrl}/api/generate", content);
         response.EnsureSuccessStatusCode();
 
         // In streaming mode, Ollama sends multiple JSON objects separated by newlines

@@ -432,6 +432,8 @@ Return as JSON object with a 'characters' array. DO NOT include this example str
         userPrompt.AppendLine();
         userPrompt.AppendLine("Provide the updated character list as JSON object with 'characters' array:");
 
+        
+        
         var response = await _ollamaApiService.CallOllamaAsync(request.ModelName, systemPrompt, userPrompt.ToString(), 0.3, request.ContextWindowSize, jsonFormat: true);
 
         try

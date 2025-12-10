@@ -42,7 +42,12 @@
                     </h2>
                     <div class="accordion-collapse collapse @(isBeforeOpen ? "show" : "")">
                         <div class="accordion-body">
-                            <textarea class="form-control" rows="20" @bind="beforeText" @bind:event="onchange" placeholder="Original text..."></textarea>
+                            <div class="mb-2">
+                                <small class="text-muted">
+                                    <i class="bi bi-pencil"></i> You can edit the text directly here
+                                </small>
+                            </div>
+                            <textarea class="form-control editable-textarea" rows="20" @bind="beforeText" @bind:event="oninput" placeholder="Paste or type your original text here. Use '##' as chapter markers..."></textarea>
                         </div>
                     </div>
                 </div>
@@ -215,10 +220,23 @@
         </div>
         <div class="col-md-6">
             <div class="d-flex align-items-center mb-2">
-                <label class="form-label me-auto mb-0">After</label>
+                <label class="form-label me-auto mb-0">
+                    After
+                    <small class="text-muted ms-2">
+                        <i class="bi bi-pencil"></i> Editable - Right-click selected text for AI edits
+                    </small>
+                </label>
                 <button class="btn btn-success btn-sm" @onclick="SaveProject">Save Project</button>
             </div>
-            <textarea class="form-control" rows="20" value="@afterText" @onchange="@((ChangeEventArgs e) => afterText = e.Value?.ToString() ?? "")" placeholder="Processed text..."></textarea>
+            <div id="afterTextEditor"
+                 class="form-control after-text-editor"
+                 contenteditable="true"
+                 @oncontextmenu="HandleContextMenu"
+                 @oncontextmenu:preventDefault="true"
+                 @oninput="HandleAfterTextInput"
+                 @onblur="HandleAfterTextBlur"
+                 spellcheck="false"
+                 data-placeholder="Processed text will appear here. You can edit it directly or right-click selected text for AI-powered edits...">@afterText</div>
         </div>
     </div>
 
@@ -320,6 +338,37 @@
     </div>
 </div>
 
+<!-- Context Menu Modal -->
+@if (showContextMenu)
+{
+    <div class="context-menu-modal" @onclick="CloseContextMenu" @onclick:stopPropagation="false">
+        <div class="context-menu-content" @onclick:stopPropagation="true">
+            <h5 class="mb-3">AI Text Editor</h5>
+            <div class="mb-3">
+                <label class="form-label">Selected Text:</label>
+                <div class="selected-text-preview">@selectedText</div>
+            </div>
+            <div class="mb-3">
+                <label class="form-label">What would you like to do with this text?</label>
+                <textarea class="form-control" rows="4" @bind="userPrompt" placeholder="E.g., 'Make it more dramatic', 'Fix grammar', 'Rewrite in a different tone'..."></textarea>
+            </div>
+            <div class="d-flex justify-content-end gap-2">
+                <button class="btn btn-secondary" @onclick="CloseContextMenu">Cancel</button>
+                <button class="btn btn-primary" @onclick="ProcessSelectedText" disabled="@(string.IsNullOrWhiteSpace(userPrompt) || isProcessingSelection)">
+                    @if (isProcessingSelection)
+                    {
+                        <span>Processing...</span>
+                    }
+                    else
+                    {
+                        <span>Apply</span>
+                    }
+                </button>
+            </div>
+        </div>
+    </div>
+}
+
 @code {
     private InputFile? fileInputRef;
     private string beforeText = "";
@@ -371,9 +420,26 @@ Focus on:
     // Image generation state
     private int generatingImageForIndex = -1;
 
+    // Context menu and text selection state
+    private bool showContextMenu = false;
+    private string selectedText = "";
+    private string userPrompt = "";
+    private bool isProcessingSelection = false;
+    private string lastAfterTextValue = "";
+
     protected override async Task OnInitializedAsync()
     {
         await LoadModelsFromOllama();
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        // Sync the editor content if afterText was changed programmatically
+        if (!string.IsNullOrEmpty(afterText) && afterText != lastAfterTextValue)
+        {
+            await JSRuntime.InvokeVoidAsync("setEditorContent", afterText);
+            lastAfterTextValue = afterText;
+        }
     }
 
     private async Task LoadModelsFromOllama()
@@ -987,6 +1053,98 @@ Focus on:
 
         return chapters;
     }
+
+    // Context menu methods
+    private async Task HandleContextMenu(MouseEventArgs e)
+    {
+        // Get selected text from JavaScript
+        selectedText = await JSRuntime.InvokeAsync<string>("getSelectedText");
+
+        if (!string.IsNullOrWhiteSpace(selectedText))
+        {
+            showContextMenu = true;
+            userPrompt = "";
+            StateHasChanged();
+        }
+    }
+
+    private async Task HandleAfterTextInput()
+    {
+        // Sync the content from the editor back to the afterText variable
+        afterText = await JSRuntime.InvokeAsync<string>("getEditorContent");
+        lastAfterTextValue = afterText;
+    }
+
+    private async Task HandleAfterTextBlur()
+    {
+        // Ensure final sync when user leaves the editor
+        afterText = await JSRuntime.InvokeAsync<string>("getEditorContent");
+        lastAfterTextValue = afterText;
+        StateHasChanged();
+    }
+
+    private void CloseContextMenu()
+    {
+        showContextMenu = false;
+        selectedText = "";
+        userPrompt = "";
+    }
+
+    private async Task ProcessSelectedText()
+    {
+        if (string.IsNullOrWhiteSpace(selectedText) || string.IsNullOrWhiteSpace(userPrompt))
+        {
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(selectedModel))
+        {
+            statusText = "Error: Please select a model first.";
+            CloseContextMenu();
+            return;
+        }
+
+        try
+        {
+            isProcessingSelection = true;
+            StateHasChanged();
+
+            // Build the system prompt
+            var systemPrompt = "You are a professional writing assistant. The user has selected a portion of text and wants you to modify it according to their instructions. Return ONLY the modified text, with no explanations, no additional commentary, and no meta-text.";
+
+            // Build the user prompt
+            var fullPrompt = $"Original text:\n\"\"\"\n{selectedText}\n\"\"\"\n\nUser instruction: {userPrompt}\n\nProvide the modified text:";
+
+            // Call the LLM
+            var response = await OllamaApiService.CallOllamaAsync(
+                selectedModel,
+                systemPrompt,
+                fullPrompt,
+                temperature,
+                contextWindowSize
+            );
+
+            // Replace the selected text with the response using JavaScript
+            await JSRuntime.InvokeVoidAsync("replaceSelectedText", response);
+
+            // Update the afterText variable by reading back from the editor
+            afterText = await JSRuntime.InvokeAsync<string>("getEditorContent");
+
+            statusText = "Text successfully modified by AI.";
+            CloseContextMenu();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[ProcessSelectedText] Error: {ex.Message}");
+            statusText = $"Error processing text: {ex.Message}";
+            CloseContextMenu();
+        }
+        finally
+        {
+            isProcessingSelection = false;
+            StateHasChanged();
+        }
+    }
 }
 
 <style>
@@ -1045,5 +1203,99 @@ Focus on:
         color: #6c757d;
         font-size: 0.875rem;
         text-align: center;
+    }
+
+    .after-text-editor {
+        min-height: 500px;
+        max-height: 600px;
+        overflow-y: auto;
+        white-space: pre-wrap;
+        word-wrap: break-word;
+        font-family: monospace;
+        line-height: 1.5;
+        cursor: text;
+        transition: all 0.2s ease;
+        position: relative;
+    }
+
+    .after-text-editor:hover {
+        border-color: #0d6efd;
+        box-shadow: 0 0 0 0.1rem rgba(13, 110, 253, 0.15);
+    }
+
+    .after-text-editor:focus {
+        outline: 2px solid #0d6efd;
+        outline-offset: -2px;
+        box-shadow: 0 0 0 0.25rem rgba(13, 110, 253, 0.25);
+    }
+
+    .after-text-editor:empty:before {
+        content: attr(data-placeholder);
+        color: #6c757d;
+        font-style: italic;
+        pointer-events: none;
+    }
+
+    .after-text-editor.editing {
+        background-color: #fffef7;
+        border-color: #0d6efd;
+    }
+
+    .editable-textarea {
+        font-family: monospace;
+        line-height: 1.5;
+        transition: all 0.2s ease;
+    }
+
+    .editable-textarea:hover {
+        border-color: #0d6efd;
+        box-shadow: 0 0 0 0.1rem rgba(13, 110, 253, 0.15);
+    }
+
+    .editable-textarea:focus {
+        border-color: #0d6efd;
+        box-shadow: 0 0 0 0.25rem rgba(13, 110, 253, 0.25);
+    }
+
+    .context-menu-modal {
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        background-color: rgba(0, 0, 0, 0.5);
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        z-index: 9999;
+    }
+
+    .context-menu-content {
+        background: white;
+        padding: 2rem;
+        border-radius: 8px;
+        box-shadow: 0 4px 20px rgba(0, 0, 0, 0.2);
+        max-width: 600px;
+        width: 90%;
+        max-height: 80vh;
+        overflow-y: auto;
+    }
+
+    .selected-text-preview {
+        background-color: #f8f9fa;
+        padding: 0.75rem;
+        border-radius: 4px;
+        border: 1px solid #dee2e6;
+        max-height: 150px;
+        overflow-y: auto;
+        white-space: pre-wrap;
+        word-wrap: break-word;
+        font-family: monospace;
+        font-size: 0.9rem;
+        color: #495057;
+    }
+
+    .gap-2 {
+        gap: 0.5rem;
     }
 </style>
