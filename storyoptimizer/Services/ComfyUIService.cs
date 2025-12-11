@@ -6,29 +6,25 @@ using Microsoft.Extensions.Configuration;
 
 namespace StoryOptimizer.Services;
 
-public class ComfyUIService
+public class ComfyUiService
 {
     private readonly IHttpClientFactory _httpClientFactory;
-    private readonly string _comfyUIBaseUrl;
+    private readonly string _comfyUiBaseUrl;
 
-    public ComfyUIService(IHttpClientFactory httpClientFactory, IConfiguration configuration)
+    public ComfyUiService(IHttpClientFactory httpClientFactory, IConfiguration configuration)
     {
         _httpClientFactory = httpClientFactory;
-        _comfyUIBaseUrl = configuration["Services:ComfyUIBaseUrl"] ?? "http://localhost:8188";
-        Console.WriteLine($"[ComfyUIService] Using ComfyUI base URL: {_comfyUIBaseUrl}");
+        _comfyUiBaseUrl = configuration["Services:ComfyUIBaseUrl"] ?? "http://localhost:8188";
+        Console.WriteLine($"[ComfyUIService] Using ComfyUI base URL: {_comfyUiBaseUrl}");
     }
 
     public async Task<string?> GenerateCharacterPortrait(string characterDescription, string workflowPath)
     {
         try
         {
-            // Load the workflow JSON (already in API format)
             var workflowJson = await File.ReadAllTextAsync(workflowPath);
-
-            // Replace #POSITIVE# with the character description
             workflowJson = workflowJson.Replace("#POSITIVE#", characterDescription);
 
-            // Parse as JsonObject
             var workflow = JsonNode.Parse(workflowJson)?.AsObject();
             if (workflow == null)
             {
@@ -38,7 +34,6 @@ public class ComfyUIService
 
             var clientId = Guid.NewGuid().ToString();
 
-            // Create the payload
             var payload = new JsonObject
             {
                 ["prompt"] = workflow,
@@ -54,8 +49,8 @@ public class ComfyUIService
                 Encoding.UTF8,
                 "application/json");
 
-            Console.WriteLine($"[ComfyUI] Sending request to {_comfyUIBaseUrl}/prompt");
-            var response = await httpClient.PostAsync($"{_comfyUIBaseUrl}/prompt", content);
+            Console.WriteLine($"[ComfyUI] Sending request to {_comfyUiBaseUrl}/prompt");
+            var response = await httpClient.PostAsync($"{_comfyUiBaseUrl}/prompt", content);
 
             var responseContent = await response.Content.ReadAsStringAsync();
 
@@ -81,7 +76,7 @@ public class ComfyUIService
             if (imageFilename != null)
             {
                 // Get the image URL
-                var imageUrl = $"{_comfyUIBaseUrl}/view?filename={imageFilename}&type=output";
+                var imageUrl = $"{_comfyUiBaseUrl}/view?filename={imageFilename}&type=output";
                 Console.WriteLine($"[ComfyUI] Image generated: {imageUrl}");
 
                 // Download the image and convert to base64
@@ -109,7 +104,7 @@ public class ComfyUIService
             try
             {
                 // Check history for this prompt
-                var historyResponse = await httpClient.GetAsync($"{_comfyUIBaseUrl}/history/{promptId}");
+                var historyResponse = await httpClient.GetAsync($"{_comfyUiBaseUrl}/history/{promptId}");
                 if (historyResponse.IsSuccessStatusCode)
                 {
                     var historyJson = await historyResponse.Content.ReadAsStringAsync();

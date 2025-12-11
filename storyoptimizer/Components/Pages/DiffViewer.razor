@@ -86,13 +86,11 @@
     {
         if (firstRender)
         {
-            // Read texts from localStorage
             beforeText = CleanService.CleanText(await JSRuntime.InvokeAsync<string>("localStorage.getItem", "diffBeforeText") ?? "");
             afterText = CleanService.CleanText(await JSRuntime.InvokeAsync<string>("localStorage.getItem", "diffAfterText") ?? "");
 
             Console.WriteLine($"[DiffViewer] Retrieved from localStorage - Before: {beforeText.Length} chars, After: {afterText.Length} chars");
 
-            // Clear localStorage
             await JSRuntime.InvokeVoidAsync("localStorage.removeItem", "diffBeforeText");
             await JSRuntime.InvokeVoidAsync("localStorage.removeItem", "diffAfterText");
 

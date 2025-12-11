@@ -5,7 +5,7 @@
 @using Microsoft.AspNetCore.Components.Forms
 @inject OllamaApiService OllamaApiService
 @inject StoryProcessingService StoryProcessingService
-@inject ComfyUIService ComfyUIService
+@inject ComfyUiService ComfyUIService
 @inject IJSRuntime JSRuntime
 @rendermode InteractiveServer
 
@@ -14,13 +14,13 @@
 <div class="container-fluid">
     <h1 class="mb-4">Story Optimizer</h1>
 
-    @if (!string.IsNullOrEmpty(statusText))
+    @if (!string.IsNullOrEmpty(_statusText))
     {
         <div class="row mb-3">
             <div class="col-md-12">
-                <div class="alert @(statusText.StartsWith("Error") ? "alert-danger" : "alert-info") alert-dismissible fade show" role="alert">
-                    @statusText
-                    <button type="button" class="btn-close" @onclick="() => statusText = string.Empty"></button>
+                <div class="alert @(_statusText.StartsWith("Error") ? "alert-danger" : "alert-info") alert-dismissible fade show" role="alert">
+                    @_statusText
+                    <button type="button" class="btn-close" @onclick="() => _statusText = string.Empty"></button>
                 </div>
             </div>
         </div>
@@ -29,7 +29,7 @@
     <div class="row mb-3">
         <div class="col-md-6">
             <!-- Hidden file input outside the accordion -->
-            <InputFile OnChange="LoadFile" accept=".json" style="display: none;" @ref="fileInputRef" id="fileInput" />
+            <InputFile OnChange="LoadFile" accept=".json" style="display: none;" @ref="_fileInputRef" id="fileInput" />
 
             <div class="accordion" id="inputAccordion">
                 <!-- Before Section -->
@@ -47,7 +47,7 @@
                                     <i class="bi bi-pencil"></i> You can edit the text directly here
                                 </small>
                             </div>
-                            <textarea class="form-control editable-textarea" rows="20" @bind="beforeText" @bind:event="oninput" placeholder="Paste or type your original text here. Use '##' as chapter markers..."></textarea>
+                            <textarea class="form-control editable-textarea" rows="20" @bind="BeforeText" @bind:event="oninput" placeholder="Paste or type your original text here. Use '##' as chapter markers..."></textarea>
                         </div>
                     </div>
                 </div>
@@ -223,7 +223,7 @@
                 <label class="form-label me-auto mb-0">
                     After
                     <small class="text-muted ms-2">
-                        <i class="bi bi-pencil"></i> Editable - Right-click selected text for AI edits
+                        <i class="bi bi-pencil"></i> Click to edit directly | Right-click selection for AI edits
                     </small>
                 </label>
                 <button class="btn btn-success btn-sm" @onclick="SaveProject">Save Project</button>
@@ -236,7 +236,7 @@
                  @oninput="HandleAfterTextInput"
                  @onblur="HandleAfterTextBlur"
                  spellcheck="false"
-                 data-placeholder="Processed text will appear here. You can edit it directly or right-click selected text for AI-powered edits...">@afterText</div>
+                 data-placeholder="Processed text will appear here. You can edit it directly or right-click selected text for AI-powered edits...">@_afterText</div>
         </div>
     </div>
 
@@ -288,6 +288,21 @@
         </div>
     </div>
 
+    <div class="row mb-3">
+        <div class="col-md-12">
+            <div class="alert alert-info alert-dismissible fade show" role="alert">
+                <strong><i class="bi bi-info-circle"></i> Editing Tips:</strong>
+                <ul class="mb-0 mt-2">
+                    <li><strong>Manual Editing:</strong> Click directly in the "Before" or "After" text areas to edit text manually</li>
+                    <li><strong>AI-Powered Edits:</strong> Select text in the "After" area and right-click to get AI-powered suggestions</li>
+                    <li><strong>Keyboard Shortcuts:</strong> Use Ctrl+Z to undo, Ctrl+Y to redo, Ctrl+A to select all</li>
+                    <li><strong>Save Your Work:</strong> Use "Save Project" button to export your work as JSON</li>
+                </ul>
+                <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+            </div>
+        </div>
+    </div>
+
     <div class="row">
         <div class="col-md-12">
             <button class="btn btn-info me-2" @onclick="ExtractCharacters" disabled="@isProcessing">
@@ -331,7 +346,7 @@
                 }
             </button>
 
-            <button class="btn btn-success ms-2" @onclick="ShowDiff" disabled="@(string.IsNullOrWhiteSpace(beforeText) || string.IsNullOrWhiteSpace(afterText))">
+            <button class="btn btn-success ms-2" @onclick="ShowDiff" disabled="@(string.IsNullOrWhiteSpace(BeforeText) || string.IsNullOrWhiteSpace(_afterText))">
                 <span>Show Diff</span>
             </button>
         </div>
@@ -370,10 +385,10 @@
 }
 
 @code {
-    private InputFile? fileInputRef;
-    private string beforeText = "";
-    private string afterText = "";
-    private string statusText = "";
+    private InputFile? _fileInputRef;
+    public string BeforeText = "";
+    private string _afterText = "";
+    private string _statusText = "";
     private string selectedModel = "";
     private double temperature = 0.8;
     private int contextWindowSize = 4096;
@@ -435,10 +450,10 @@ Focus on:
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
         // Sync the editor content if afterText was changed programmatically
-        if (!string.IsNullOrEmpty(afterText) && afterText != lastAfterTextValue)
+        if (!string.IsNullOrEmpty(_afterText) && _afterText != lastAfterTextValue)
         {
-            await JSRuntime.InvokeVoidAsync("setEditorContent", afterText);
-            lastAfterTextValue = afterText;
+            await JSRuntime.InvokeVoidAsync("setEditorContent", _afterText);
+            lastAfterTextValue = _afterText;
         }
     }
 
@@ -529,7 +544,7 @@ Focus on:
             var saveData = JsonSerializer.Deserialize<SaveData>(json);
             if (saveData == null)
             {
-                statusText = "Error: Invalid JSON file format.";
+                _statusText = "Error: Invalid JSON file format.";
                 return;
             }
 
@@ -539,7 +554,7 @@ Focus on:
             contextWindowSize = saveData.ContextWindow;
             chapter = saveData.Chapter;
             ruleset = saveData.Ruleset;
-            beforeText = saveData.Before;
+            BeforeText = saveData.Before;
             knownCharacters = saveData.Characters;
             chapterSummaries = saveData.Summaries;
 
@@ -550,10 +565,10 @@ Focus on:
             }
 
             // Restore preparation state if we have the data
-            if (!string.IsNullOrWhiteSpace(beforeText))
+            if (!string.IsNullOrWhiteSpace(BeforeText))
             {
                 // Split chapters to restore preparedChapters
-                var chapters = SplitIntoChapters(beforeText, chapter);
+                var chapters = SplitIntoChapters(BeforeText, chapter);
 
                 if (chapters.Count > 0)
                 {
@@ -573,15 +588,15 @@ Focus on:
             // Update status message
             if (isPrepared)
             {
-                statusText = $"Project loaded successfully! Model: {selectedModel}, Characters: {knownCharacters.Count}, Summaries: {chapterSummaries.Count}. Ready to apply ruleset.";
+                _statusText = $"Project loaded successfully! Model: {selectedModel}, Characters: {knownCharacters.Count}, Summaries: {chapterSummaries.Count}. Ready to apply ruleset.";
             }
             else if (areCharactersExtracted)
             {
-                statusText = $"Project loaded successfully! Model: {selectedModel}, Characters: {knownCharacters.Count}. Generate summaries to proceed.";
+                _statusText = $"Project loaded successfully! Model: {selectedModel}, Characters: {knownCharacters.Count}. Generate summaries to proceed.";
             }
             else
             {
-                statusText = $"Project loaded successfully! Model: {selectedModel}. Extract characters and generate summaries to proceed.";
+                _statusText = $"Project loaded successfully! Model: {selectedModel}. Extract characters and generate summaries to proceed.";
             }
 
             StateHasChanged();
@@ -595,7 +610,7 @@ Focus on:
             {
                 Console.WriteLine($"[LoadFile] Inner exception: {ex.InnerException.Message}");
             }
-            statusText = $"Error loading file: {ex.Message} (see console for details)";
+            _statusText = $"Error loading file: {ex.Message} (see console for details)";
         }
     }
 
@@ -610,7 +625,7 @@ Focus on:
                 ContextWindow = contextWindowSize,
                 Chapter = chapter,
                 Ruleset = ruleset,
-                Before = beforeText,
+                Before = BeforeText,
                 Characters = knownCharacters,
                 Summaries = chapterSummaries
             };
@@ -624,33 +639,33 @@ Focus on:
 
             await JSRuntime.InvokeVoidAsync("downloadFile", fileName, "application/json", json);
 
-            statusText = $"Project saved as {fileName}";
+            _statusText = $"Project saved as {fileName}";
         }
         catch (Exception ex)
         {
-            statusText = $"Error saving project: {ex.Message}";
+            _statusText = $"Error saving project: {ex.Message}";
         }
     }
 
     private async Task ExtractCharacters()
     {
-        Console.WriteLine($"ExtractCharacters called - beforeText length: {beforeText?.Length ?? 0}");
+        Console.WriteLine($"ExtractCharacters called - beforeText length: {BeforeText?.Length ?? 0}");
 
         if (string.IsNullOrWhiteSpace(selectedModel))
         {
-            statusText = "Error: Please select a model first.";
+            _statusText = "Error: Please select a model first.";
             return;
         }
 
-        if (string.IsNullOrWhiteSpace(beforeText))
+        if (string.IsNullOrWhiteSpace(BeforeText))
         {
-            statusText = $"Error: Please provide text to process. Current length: {beforeText?.Length ?? 0}";
+            _statusText = $"Error: Please provide text to process. Current length: {BeforeText?.Length ?? 0}";
             return;
         }
 
         if (string.IsNullOrWhiteSpace(chapter))
         {
-            statusText = "Error: Please provide a chapter marker.";
+            _statusText = "Error: Please provide a chapter marker.";
             return;
         }
 
@@ -658,16 +673,16 @@ Focus on:
         {
             isProcessing = true;
             areCharactersExtracted = false;
-            afterText = "";
-            statusText = "";
+            _afterText = "";
+            _statusText = "";
             StateHasChanged();
 
             // Split the story into chapters
-            var chapters = SplitIntoChapters(beforeText, chapter);
+            var chapters = SplitIntoChapters(BeforeText, chapter);
 
             if (chapters.Count == 0)
             {
-                statusText = $"Error: No chapters found with marker '{chapter}'";
+                _statusText = $"Error: No chapters found with marker '{chapter}'";
                 isProcessing = false;
                 return;
             }
@@ -675,7 +690,7 @@ Focus on:
             // Reset tracking lists for new processing run
             knownCharacters.Clear();
 
-            statusText = $"Extracting characters from {chapters.Count} chapters...";
+            _statusText = $"Extracting characters from {chapters.Count} chapters...";
             StateHasChanged();
 
             // Extract characters
@@ -688,7 +703,7 @@ Focus on:
                 // Progress callback to update UI in real-time
                 (status, chars) =>
                 {
-                    statusText = status;
+                    _statusText = status;
                     knownCharacters = chars;
                     StateHasChanged();
                 }
@@ -702,7 +717,7 @@ Focus on:
             isCharactersOpen = true;
 
             areCharactersExtracted = true;
-            statusText = $"Character extraction complete! Total characters found: {knownCharacters.Count}.";
+            _statusText = $"Character extraction complete! Total characters found: {knownCharacters.Count}.";
             StateHasChanged();
         }
         catch (Exception ex)
@@ -714,7 +729,7 @@ Focus on:
             {
                 Console.WriteLine($"[ExtractCharacters] Inner exception: {ex.InnerException.Message}");
             }
-            statusText = $"Error: {ex.Message} (see console for details)";
+            _statusText = $"Error: {ex.Message} (see console for details)";
             areCharactersExtracted = false;
         }
         finally
@@ -725,23 +740,23 @@ Focus on:
 
     private async Task GenerateSummaries()
     {
-        Console.WriteLine($"GenerateSummaries called - beforeText length: {beforeText?.Length ?? 0}");
+        Console.WriteLine($"GenerateSummaries called - beforeText length: {BeforeText?.Length ?? 0}");
 
         if (string.IsNullOrWhiteSpace(selectedModel))
         {
-            statusText = "Error: Please select a model first.";
+            _statusText = "Error: Please select a model first.";
             return;
         }
 
-        if (string.IsNullOrWhiteSpace(beforeText))
+        if (string.IsNullOrWhiteSpace(BeforeText))
         {
-            statusText = $"Error: Please provide text to process. Current length: {beforeText?.Length ?? 0}";
+            _statusText = $"Error: Please provide text to process. Current length: {BeforeText?.Length ?? 0}";
             return;
         }
 
         if (string.IsNullOrWhiteSpace(chapter))
         {
-            statusText = "Error: Please provide a chapter marker.";
+            _statusText = "Error: Please provide a chapter marker.";
             return;
         }
 
@@ -749,26 +764,24 @@ Focus on:
         {
             isProcessing = true;
             areSummariesGenerated = false;
-            statusText = "";
+            _statusText = "";
             StateHasChanged();
 
             // Split the story into chapters
-            var chapters = SplitIntoChapters(beforeText, chapter);
+            var chapters = SplitIntoChapters(BeforeText, chapter);
 
             if (chapters.Count == 0)
             {
-                statusText = $"Error: No chapters found with marker '{chapter}'";
+                _statusText = $"Error: No chapters found with marker '{chapter}'";
                 isProcessing = false;
                 return;
             }
 
-            // Reset summaries for new processing run
             chapterSummaries.Clear();
 
-            statusText = $"Generating summaries for {chapters.Count} chapters...";
+            _statusText = $"Generating summaries for {chapters.Count} chapters...";
             StateHasChanged();
 
-            // Generate summaries
             var summaries = await StoryProcessingService.GenerateSummariesAsync(
                 selectedModel,
                 temperature,
@@ -778,21 +791,17 @@ Focus on:
                 // Progress callback to update UI in real-time
                 (status, sums) =>
                 {
-                    statusText = status;
+                    _statusText = status;
                     chapterSummaries = sums;
                     StateHasChanged();
                 }
             );
-
-            // Store the prepared chapters for later use
             preparedChapters = chapters;
-
-            // Update UI with final results
             chapterSummaries = summaries;
             isSummaryOpen = true;
 
             areSummariesGenerated = true;
-            statusText = $"Summary generation complete! Total summaries: {chapterSummaries.Count}. Ready to apply ruleset.";
+            _statusText = $"Summary generation complete! Total summaries: {chapterSummaries.Count}. Ready to apply ruleset.";
             StateHasChanged();
         }
         catch (Exception ex)
@@ -804,7 +813,7 @@ Focus on:
             {
                 Console.WriteLine($"[GenerateSummaries] Inner exception: {ex.InnerException.Message}");
             }
-            statusText = $"Error: {ex.Message} (see console for details)";
+            _statusText = $"Error: {ex.Message} (see console for details)";
             areSummariesGenerated = false;
         }
         finally
@@ -819,31 +828,30 @@ Focus on:
 
         if (!isPrepared || preparedChapters == null)
         {
-            statusText = "Error: Please click 'Prepare' first to extract characters and summaries.";
+            _statusText = "Error: Please click 'Prepare' first to extract characters and summaries.";
             return;
         }
 
         if (string.IsNullOrWhiteSpace(selectedModel))
         {
-            statusText = "Error: Please select a model first.";
+            _statusText = "Error: Please select a model first.";
             return;
         }
 
         if (string.IsNullOrWhiteSpace(ruleset))
         {
-            statusText = "Error: Please provide a ruleset.";
+            _statusText = "Error: Please provide a ruleset.";
             return;
         }
 
         try
         {
             isProcessing = true;
-            afterText = "";
-            statusText = $"Revising {preparedChapters.Count} chapters using prepared data...";
+            _afterText = "";
+            _statusText = $"Revising {preparedChapters.Count} chapters using prepared data...";
             StateHasChanged();
 
-            // Revise chapters (Pass 3: Revision using dynamically filtered characters and summaries)
-            var revisedChapters = await StoryProcessingService.ReviseChaptersAsync(
+            await StoryProcessingService.ReviseChaptersAsync(
                 selectedModel,
                 temperature,
                 contextWindowSize,
@@ -851,17 +859,16 @@ Focus on:
                 ruleset,
                 knownCharacters,
                 chapterSummaries,
-                // Progress callback: update UI with each completed chapter
                 (revisedChapter, currentChapter, totalChapters) =>
                 {
-                    afterText += revisedChapter;
-                    afterText += "\n\n";
-                    statusText = $"Revising chapters... ({currentChapter}/{totalChapters} complete)";
+                    _afterText += CleanService.CleanText(revisedChapter);
+                    _afterText += "\n\n";
+                    _statusText = $"Revising chapters... ({currentChapter}/{totalChapters} complete)";
                     StateHasChanged();
                 }
             );
 
-            statusText = $"Revision complete! Total chapters: {preparedChapters.Count}, Characters used: {knownCharacters.Count}";
+            _statusText = $"Revision complete! Total chapters: {preparedChapters.Count}, Characters used: {knownCharacters.Count}";
             StateHasChanged();
         }
         catch (Exception ex)
@@ -873,7 +880,7 @@ Focus on:
             {
                 Console.WriteLine($"[ApplyRuleset] Inner exception: {ex.InnerException.Message}");
             }
-            statusText = $"Error: {ex.Message} (see console for details)";
+            _statusText = $"Error: {ex.Message} (see console for details)";
         }
         finally
         {
@@ -883,11 +890,11 @@ Focus on:
 
     private async Task ShowDiff()
     {
-        Console.WriteLine($"[ShowDiff] Storing texts - Before: {beforeText.Length} chars, After: {afterText.Length} chars");
+        Console.WriteLine($"[ShowDiff] Storing texts - Before: {BeforeText.Length} chars, After: {_afterText.Length} chars");
 
         // Store texts in localStorage so the new window can access them
-        await JSRuntime.InvokeVoidAsync("localStorage.setItem", "diffBeforeText", beforeText);
-        await JSRuntime.InvokeVoidAsync("localStorage.setItem", "diffAfterText", afterText);
+        await JSRuntime.InvokeVoidAsync("localStorage.setItem", "diffBeforeText", BeforeText);
+        await JSRuntime.InvokeVoidAsync("localStorage.setItem", "diffAfterText", _afterText);
 
         Console.WriteLine($"[ShowDiff] Texts stored in localStorage, opening window...");
 
@@ -917,7 +924,7 @@ Focus on:
         character.LastChangedInChapter = editingCharacterLastChanged > 0 ? editingCharacterLastChanged : null;
 
         editingCharacterIndex = -1;
-        statusText = $"Character '{character.Name}' updated successfully.";
+        _statusText = $"Character '{character.Name}' updated successfully.";
     }
 
     private void CancelCharacterEdit()
@@ -929,7 +936,7 @@ Focus on:
     {
         var characterName = knownCharacters[index].Name;
         knownCharacters.RemoveAt(index);
-        statusText = $"Character '{characterName}' removed.";
+        _statusText = $"Character '{characterName}' removed.";
     }
 
     // Summary editing methods
@@ -943,7 +950,7 @@ Focus on:
     {
         chapterSummaries[index] = editingSummaryText;
         editingSummaryIndex = -1;
-        statusText = $"Chapter {index + 1} summary updated successfully.";
+        _statusText = $"Chapter {index + 1} summary updated successfully.";
     }
 
     private void CancelSummaryEdit()
@@ -954,7 +961,7 @@ Focus on:
     private void RemoveSummary(int index)
     {
         chapterSummaries.RemoveAt(index);
-        statusText = $"Chapter {index + 1} summary removed.";
+        _statusText = $"Chapter {index + 1} summary removed.";
     }
 
     private async Task GenerateCharacterImage(int index)
@@ -965,14 +972,14 @@ Focus on:
             StateHasChanged();
 
             var character = knownCharacters[index];
-            statusText = $"Generating portrait for {character.Name}...";
+            _statusText = $"Generating portrait for {character.Name}...";
 
             // Path to the workflow JSON
             var workflowPath = Path.Combine(AppContext.BaseDirectory, "Services", "image.json");
 
             if (!File.Exists(workflowPath))
             {
-                statusText = $"Error: Workflow file not found at {workflowPath}";
+                _statusText = $"Error: Workflow file not found at {workflowPath}";
                 return;
             }
 
@@ -982,11 +989,11 @@ Focus on:
             if (imageUrl != null)
             {
                 character.PortraitUrl = imageUrl;
-                statusText = $"Portrait generated successfully for {character.Name}!";
+                _statusText = $"Portrait generated successfully for {character.Name}!";
             }
             else
             {
-                statusText = $"Error: Failed to generate portrait for {character.Name}";
+                _statusText = $"Error: Failed to generate portrait for {character.Name}";
             }
 
             StateHasChanged();
@@ -1000,7 +1007,7 @@ Focus on:
             {
                 Console.WriteLine($"[GenerateCharacterImage] Inner exception: {ex.InnerException.Message}");
             }
-            statusText = $"Error generating portrait: {ex.Message} (see console for details)";
+            _statusText = $"Error generating portrait: {ex.Message} (see console for details)";
         }
         finally
         {
@@ -1071,15 +1078,15 @@ Focus on:
     private async Task HandleAfterTextInput()
     {
         // Sync the content from the editor back to the afterText variable
-        afterText = await JSRuntime.InvokeAsync<string>("getEditorContent");
-        lastAfterTextValue = afterText;
+        _afterText = await JSRuntime.InvokeAsync<string>("getEditorContent");
+        lastAfterTextValue = _afterText;
     }
 
     private async Task HandleAfterTextBlur()
     {
         // Ensure final sync when user leaves the editor
-        afterText = await JSRuntime.InvokeAsync<string>("getEditorContent");
-        lastAfterTextValue = afterText;
+        _afterText = await JSRuntime.InvokeAsync<string>("getEditorContent");
+        lastAfterTextValue = _afterText;
         StateHasChanged();
     }
 
@@ -1099,7 +1106,7 @@ Focus on:
 
         if (string.IsNullOrWhiteSpace(selectedModel))
         {
-            statusText = "Error: Please select a model first.";
+            _statusText = "Error: Please select a model first.";
             CloseContextMenu();
             return;
         }
@@ -1128,15 +1135,15 @@ Focus on:
             await JSRuntime.InvokeVoidAsync("replaceSelectedText", response);
 
             // Update the afterText variable by reading back from the editor
-            afterText = await JSRuntime.InvokeAsync<string>("getEditorContent");
+            _afterText = await JSRuntime.InvokeAsync<string>("getEditorContent");
 
-            statusText = "Text successfully modified by AI.";
+            _statusText = "Text successfully modified by AI.";
             CloseContextMenu();
         }
         catch (Exception ex)
         {
             Console.WriteLine($"[ProcessSelectedText] Error: {ex.Message}");
-            statusText = $"Error processing text: {ex.Message}";
+            _statusText = $"Error processing text: {ex.Message}";
             CloseContextMenu();
         }
         finally
@@ -1207,11 +1214,12 @@ Focus on:
 
     .after-text-editor {
         min-height: 500px;
-        max-height: 600px;
+        max-height: 665px;
         overflow-y: auto;
         white-space: pre-wrap;
         word-wrap: break-word;
         font-family: monospace;
+        /*height:665px;*/
         line-height: 1.5;
         cursor: text;
         transition: all 0.2s ease;
