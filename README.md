@@ -297,14 +297,4 @@ Click **"Show Diff"** to open a side-by-side comparison of your original and rev
 - **Container**: Docker with multi-stage build
 - **Port**: 5000 (host) -> 8080 (container)
 
-## License
 
-[Add your license information here]
-
-## Contributing
-
-[Add contribution guidelines here]
-
-## Support
-
-[Add support/contact information here]
