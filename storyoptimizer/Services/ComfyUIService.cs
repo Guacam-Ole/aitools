@@ -10,12 +10,15 @@ public class ComfyUiService
 {
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly string _comfyUiBaseUrl;
+    private readonly int _httpClientTimeoutMinutes;
 
     public ComfyUiService(IHttpClientFactory httpClientFactory, IConfiguration configuration)
     {
         _httpClientFactory = httpClientFactory;
         _comfyUiBaseUrl = configuration["Services:ComfyUIBaseUrl"] ?? "http://localhost:8188";
+        _httpClientTimeoutMinutes = configuration.GetValue<int>("Services:ComfyUIHttpClientTimeoutMinutes", 10);
         Console.WriteLine($"[ComfyUIService] Using ComfyUI base URL: {_comfyUiBaseUrl}");
+        Console.WriteLine($"[ComfyUIService] HttpClient timeout: {_httpClientTimeoutMinutes} minutes");
     }
 
     public async Task<string?> GenerateCharacterPortrait(string characterDescription, string workflowPath)
@@ -41,7 +44,7 @@ public class ComfyUiService
             };
 
             var httpClient = _httpClientFactory.CreateClient();
-            httpClient.Timeout = TimeSpan.FromMinutes(10);
+            httpClient.Timeout = TimeSpan.FromMinutes(_httpClientTimeoutMinutes);
 
             // Queue the prompt
             var content = new StringContent(

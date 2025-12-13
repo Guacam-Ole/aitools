@@ -401,21 +401,28 @@ public class StoryProcessingService
         userPrompt.AppendLine();
         userPrompt.AppendLine("Provide the updated character list as JSON object with 'characters' array:");
 
-        
-        
-        var response = await _ollamaApiService.CallOllamaAsync(request.ModelName, systemPrompt, userPrompt.ToString(), 0.3, request.ContextWindowSize, jsonFormat: true);
+        int retriesLeft = 5;
 
-        try
+
+        while (retriesLeft > 0)
         {
-            var wrapper = JsonSerializer.Deserialize<CharacterListWrapper>(response);
-            return wrapper?.Characters ?? request.KnownCharacters;
+            string response = null;
+            try
+            {
+                response = await _ollamaApiService.CallOllamaAsync(request.ModelName, systemPrompt,
+                    userPrompt.ToString(), 0.3, request.ContextWindowSize, jsonFormat: true);
+                var wrapper = JsonSerializer.Deserialize<CharacterListWrapper>(response);
+                return wrapper?.Characters ?? request.KnownCharacters;
+            }
+            catch (Exception e)
+            {
+                retriesLeft--;
+                Console.WriteLine($"[ExtractCharactersFromRaw] Deserialization error: {e.Message}");
+                Console.WriteLine($"[ExtractCharactersFromRaw] Response was: {response}. Retries left: {retriesLeft}");
+        
+            }
         }
-        catch (Exception e)
-        {
-            Console.WriteLine($"[ExtractCharactersFromRaw] Deserialization error: {e.Message}");
-            Console.WriteLine($"[ExtractCharactersFromRaw] Response was: {response}");
-            return request.KnownCharacters;
-        }
+        return request.KnownCharacters;
     }
 
     private async Task<string> SummarizeRawChapterAsync(string rawChapter, ChapterProcessingRequest request)

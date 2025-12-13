@@ -10,12 +10,15 @@ public class OllamaApiService
 {
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly string _ollamaBaseUrl;
+    private readonly int _httpClientTimeoutMinutes;
 
     public OllamaApiService(IHttpClientFactory httpClientFactory, IConfiguration configuration)
     {
         _httpClientFactory = httpClientFactory;
         _ollamaBaseUrl = configuration["Services:OllamaBaseUrl"] ?? "http://localhost:11434";
+        _httpClientTimeoutMinutes = configuration.GetValue<int>("Services:HttpClientTimeoutMinutes", 5);
         Console.WriteLine($"[OllamaApiService] Using Ollama base URL: {_ollamaBaseUrl}");
+        Console.WriteLine($"[OllamaApiService] HttpClient timeout: {_httpClientTimeoutMinutes} minutes");
     }
 
     public async Task<List<string>> GetAvailableModelsAsync()
@@ -171,18 +174,14 @@ public class OllamaApiService
     {
         // Model weights: (model_size_in_billions × quantization_bits) / 8
         // Example: 12B model with Q5_K_M (5.5 bits) = 12 × 5.5 / 8 = 8.25 GB
-        double modelWeightsGB = (modelInfo.ModelSizeInBillions * modelInfo.QuantizationBits) / 8.0;
+        var modelWeightsGB = (modelInfo.ModelSizeInBillions * modelInfo.QuantizationBits) / 8.0;
 
         // KV cache: context_size × model_size × constant
         // Based on empirical data: 12B Q5_K_M with 16K context uses ~16GB total (8.25GB weights + 7.75GB KV cache)
         // 7.75 = 16384 × 12 × constant → constant ≈ 0.00004
-        double kvCacheGB = contextWindowSize * modelInfo.ModelSizeInBillions * 0.00004;
+        var kvCacheGB = contextWindowSize * modelInfo.ModelSizeInBillions * 0.00004;
 
-        // Total VRAM usage (no additional overhead multiplier needed, it's already in the empirical constant)
-        double totalGB = modelWeightsGB + kvCacheGB;
-
-        Console.WriteLine($"[VRAM Calc] Model: {modelInfo.ModelSizeInBillions}B, Quant: {modelInfo.QuantizationBits} bits, Context: {contextWindowSize}");
-        Console.WriteLine($"[VRAM Calc] Weights: {modelWeightsGB:F2} GB, KV Cache: {kvCacheGB:F2} GB, Total: {totalGB:F2} GB");
+        var totalGB = modelWeightsGB + kvCacheGB;
 
         return Math.Round(totalGB, 1);
     }
@@ -289,7 +288,7 @@ public class OllamaApiService
     private async Task<(string response, bool done)> CallOllamaSingleAsync(string model, string systemPrompt, string userPrompt, double temperature, int contextWindowSize = 4096, bool jsonFormat = false)
     {
         var httpClient = _httpClientFactory.CreateClient();
-        httpClient.Timeout = TimeSpan.FromMinutes(30);  // Increased to 30 minutes for long requests
+        httpClient.Timeout = TimeSpan.FromMinutes(_httpClientTimeoutMinutes);  
 
         object ollamaRequest;
 
@@ -299,9 +298,9 @@ public class OllamaApiService
             {
                 model,
                 prompt = $"System: {systemPrompt}\n\nUser: {userPrompt}",
-                stream = true,  // Enable streaming to get proper done detection
+                stream = true,  
                 format = "json",
-                keep_alive = "5m",  // Keep model loaded for 5 minutes for continuations, then unload
+                keep_alive = "5m", 
                 options = new
                 {
                     temperature,

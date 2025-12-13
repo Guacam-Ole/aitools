@@ -16,4 +16,8 @@
     <PackageReference Include="DiffPlex" Version="1.9.0" />
   </ItemGroup>
 
+  <ItemGroup>
+    <Folder Include="docs\" />
+  </ItemGroup>
+
 </Project>

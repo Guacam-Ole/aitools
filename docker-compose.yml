@@ -1,0 +1,22 @@
+services:
+  storyoptimizer:
+    build:
+      context: ./storyoptimizer
+      dockerfile: Dockerfile
+    ports:
+      - "5000:8080"
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Production
+      # Service URLs
+      - Services__OllamaBaseUrl=http://mediacenter:11434
+      - Services__ComfyUIBaseUrl=http://mediacenter:8188
+      # HttpClient timeouts (in minutes)
+      - Services__HttpClientTimeoutMinutes=5
+      - Services__ComfyUIHttpClientTimeoutMinutes=10
+    networks:
+      - storyoptimizer-network
+    restart: unless-stopped
+
+networks:
+  storyoptimizer-network:
+    driver: bridge
